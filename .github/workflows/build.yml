@@ -14,21 +14,24 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
-    - name: Install dependencies
+    - name: Compile library
       run: |
-        sudo apt-get update
-        sudo apt-get install -y libcurl4-openssl-dev
-    - name: Compile
+        gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
+    - name: Compile executable
       run: |
-        gcc -o modx main.c -lcurl -lpthread -lm -Wall -Wextra
+        gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
     - name: Test
       run: |
-        ./modx || true
-        file modx
-    - name: Upload artifact
+        file modx libmodx.so
+    - name: Upload artifact (library)
       uses: actions/upload-artifact@v4
       with:
-        name: modx-linux-x86_64
+        name: modx-linux-x86_64-lib
+        path: libmodx.so
+    - name: Upload artifact (executable)
+      uses: actions/upload-artifact@v4
+      with:
+        name: modx-linux-x86_64-exe
         path: modx
 
   build-linux-arm64:
@@ -39,83 +42,29 @@ jobs:
     - name: Install cross-compile tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu libcurl4-openssl-dev
-        sudo apt-get install -y crossbuild-essential-arm64
-    - name: Compile
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+    - name: Compile library
       run: |
-        aarch64-linux-gnu-gcc -o modx main.c -lcurl -lpthread -lm -Wall -Wextra
-    - name: Upload artifact
+        aarch64-linux-gnu-gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
+    - name: Compile executable
+      run: |
+        aarch64-linux-gnu-gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
+    - name: Upload artifact (library)
       uses: actions/upload-artifact@v4
       with:
-        name: modx-linux-arm64
-        path: modx
-
-  build-android-arm64:
-    name: Android ARM64
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Setup Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
-        unzip android-ndk-r27b-linux.zip
-        echo "ANDROID_NDK=$PWD/android-ndk-r27b" >> $GITHUB_ENV
-    - name: Compile
-      run: |
-        export PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        aarch64-linux-android21-clang -o modx main.c -lcurl -lpthread -lm -static -Wall -Wextra
-    - name: Upload artifact
+        name: modx-linux-arm64-lib
+        path: libmodx.so
+    - name: Upload artifact (executable)
       uses: actions/upload-artifact@v4
       with:
-        name: modx-android-arm64
-        path: modx
-
-  build-android-armv7:
-    name: Android ARMv7
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Setup Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
-        unzip android-ndk-r27b-linux.zip
-        echo "ANDROID_NDK=$PWD/android-ndk-r27b" >> $GITHUB_ENV
-    - name: Compile
-      run: |
-        export PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        armv7a-linux-androideabi21-clang -o modx main.c -lcurl -lpthread -lm -static -Wall -Wextra
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-android-armv7
-        path: modx
-
-  build-alpine-static:
-    name: Alpine x86_64 (static)
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Build with musl
-      run: |
-        docker run --rm -v $PWD:/build -w /build alpine:latest sh -c "
-          apk update &&
-          apk add gcc musl-dev curl-dev curl-static &&
-          gcc -static -o modx main.c -lcurl -lpthread -lm -Wall -Wextra
-        "
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-alpine-static
+        name: modx-linux-arm64-exe
         path: modx
 
   release:
     name: Create Release Package
     needs: [
       build-linux-x86_64,
-      build-linux-arm64,
-      build-android-arm64,
-      build-android-armv7,
-      build-alpine-static
+      build-linux-arm64
     ]
     runs-on: ubuntu-22.04
     if: github.event_name == 'release'
@@ -126,12 +75,15 @@ jobs:
         path: artifacts
     - name: Package
       run: |
-        mkdir release
-        cp artifacts/modx-linux-x86_64/modx release/modx-linux-x86_64
-        cp artifacts/modx-linux-arm64/modx release/modx-linux-arm64
-        cp artifacts/modx-android-arm64/modx release/modx-android-arm64
-        cp artifacts/modx-android-armv7/modx release/modx-android-armv7
-        cp artifacts/modx-alpine-static/modx release/modx-alpine-static
+        mkdir -p release/linux-x86_64
+        mkdir -p release/linux-arm64
+        
+        cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
+        cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
+        
+        cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
+        cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
+        
         cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
     - name: Upload release
       uses: actions/upload-release-asset@v1
