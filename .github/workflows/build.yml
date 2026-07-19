@@ -1,170 +1,39 @@
-name: Build and Test MoDx
+release:
+  name: Create Release Package
+  needs: [build-linux-x86_64, build-linux-arm64]
+  runs-on: ubuntu-22.04
+  if: github.event_name == 'push' && github.ref_name == 'main'
+  permissions:
+    contents: write
+  steps:
+  - uses: actions/checkout@v4
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-  release:
-    types: [ published, created ]
+  - name: Download all artifacts
+    uses: actions/download-artifact@v4
+    with:
+      path: artifacts
 
-jobs:
-  build-linux-x86_64:
-    name: Linux x86_64
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Compile library
-      run: |
-        gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
-    - name: Compile executable
-      run: |
-        gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-    - name: Test
-      run: |
-        file modx libmodx.so
-    - name: Upload artifact (library)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-x86_64-lib
-        path: libmodx.so
-    - name: Upload artifact (executable)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-x86_64-exe
-        path: modx
+  - name: Prepare release package
+    run: |
+      set -e
+      mkdir -p release/linux-x86_64
+      mkdir -p release/linux-arm64
+      cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
+      cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
+      cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
+      cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
+      cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
+      cd ..
+      ls -lh modx-${{ github.ref_name }}.tar.gz
 
-  build-linux-arm64:
-    name: Linux ARM64
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install cross-compile tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-    - name: Compile library
-      run: |
-        aarch64-linux-gnu-gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
-    - name: Compile executable
-      run: |
-        aarch64-linux-gnu-gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-    - name: Upload artifact (library)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-arm64-lib
-        path: libmodx.so
-    - name: Upload artifact (executable)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-arm64-exe
-        path: modx
-
-  release:
-    name: Create Release Package
-    # Removed 'needs' so this job will not be skipped when other jobs are skipped.
-    runs-on: ubuntu-22.04
-    if: github.event_name == 'push'
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Try downloading artifacts from this run
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-
-    - name: Display artifact structure for debugging
-      run: |
-        echo "=== Artifact Directory Structure ==="
-        ls -la artifacts || true
-        find artifacts/ -type f -exec ls -lh {} \; || true
-
-    - name: Build locally if artifacts missing
-      run: |
-        set -e
-        # If no artifact files were downloaded, do local builds as fallback
-        if [ -z "$(find artifacts -type f 2>/dev/null)" ]; then
-          echo "No artifacts found in 'artifacts/' — building locally as fallback."
-
-          # x86_64 build
-          echo "Building x86_64..."
-          gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
-          gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-
-          mkdir -p artifacts/modx-linux-x86_64-lib
-          mkdir -p artifacts/modx-linux-x86_64-exe
-          cp libmodx.so artifacts/modx-linux-x86_64-lib/
-          cp modx artifacts/modx-linux-x86_64-exe/
-
-          # ARM64 cross-compile (install toolchain and build)
-          echo "Installing aarch64 cross-compiler..."
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
-
-          echo "Building arm64..."
-          aarch64-linux-gnu-gcc -fPIC -shared -o libmodx_arm.so modx_lib.c -lpthread -lm -Wall -Wextra
-          aarch64-linux-gnu-gcc -o modx_arm main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-
-          mkdir -p artifacts/modx-linux-arm64-lib
-          mkdir -p artifacts/modx-linux-arm64-exe
-          cp libmodx_arm.so artifacts/modx-linux-arm64-lib/libmodx.so || true
-          cp modx_arm artifacts/modx-linux-arm64-exe/modx || true
-
-        else
-          echo "Artifacts present — skipping local build."
-        fi
-
-    - name: Prepare release package
-      run: |
-        set -e
-        mkdir -p release/linux-x86_64
-        mkdir -p release/linux-arm64
-
-        # Prefer downloaded artifacts, fallback to locally-built files
-        if [ -f artifacts/modx-linux-x86_64-lib/libmodx.so ]; then
-          cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
-        elif [ -f libmodx.so ]; then
-          cp libmodx.so release/linux-x86_64/
-        else
-          echo "Warning: x86_64 library not found"
-        fi
-
-        if [ -f artifacts/modx-linux-x86_64-exe/modx ]; then
-          cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
-        elif [ -f modx ]; then
-          cp modx release/linux-x86_64/
-        else
-          echo "Warning: x86_64 executable not found"
-        fi
-
-        if [ -f artifacts/modx-linux-arm64-lib/libmodx.so ]; then
-          cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
-        elif [ -f artifacts/modx-linux-arm64-lib/libmodx.so ]; then
-          cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
-        elif [ -f libmodx_arm.so ]; then
-          cp libmodx_arm.so release/linux-arm64/libmodx.so
-        else
-          echo "Warning: arm64 library not found"
-        fi
-
-        if [ -f artifacts/modx-linux-arm64-exe/modx ]; then
-          cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
-        elif [ -f modx_arm ]; then
-          cp modx_arm release/linux-arm64/modx
-        else
-          echo "Warning: arm64 executable not found"
-        fi
-
-        cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
-        cd ..
-        ls -lh modx-${{ github.ref_name }}.tar.gz
-
-    - name: Upload release assets
-      uses: softprops/action-gh-release@v1
-      with:
-        files: modx-${{ github.ref_name }}.tar.gz
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  - name: Auto Release (Nightly)
+    uses: softprops/action-gh-release@v1
+    with:
+      tag_name: nightly-${{ github.run_number }}
+      name: "Nightly Build #${{ github.run_number }}"
+      body: "Auto-compiled from commit ${{ github.sha }}"
+      draft: false
+      prerelease: true
+      files: modx-${{ github.ref_name }}.tar.gz
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
