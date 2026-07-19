@@ -61,7 +61,7 @@ jobs:
         path: modx
   release:
     name: Create Release Package
-    needs: [build-linux-x86_64, build-linux-arm64]完成
+    needs: [build-linux-x86_64, build-linux-arm64]
     runs-on: ubuntu-22.04
     if: github.event_name == 'push' && github.ref_name == 'main'
     permissions:
