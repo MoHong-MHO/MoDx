@@ -1,5 +1,4 @@
 // modx_lib.c - MoDx multi-thread downloader library
-// Cross-platform: Linux x86_64, ARM64, Android ARM64/ARMv7, Alpine x86_64
 
 #include "modx_lib.h"
 #include <stdio.h>
@@ -9,16 +8,18 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #define HTTP_PORT 80
 #define HTTPS_PORT 443
 #define MAX_HEADER_SIZE 4096
+#define MAX_RETRIES 3
 
+// Thread data
 typedef struct {
     int id;
     char url[512];
@@ -27,28 +28,30 @@ typedef struct {
     long long end_byte;
     long long downloaded;
     int complete;
+    int error;
     pthread_t thread;
+    struct ModxDownloader *downloader;  // pointer to parent
 } DownloadThread;
 
-typedef struct {
+// Main downloader structure
+typedef struct ModxDownloader {
     DownloadThread *threads;
     int thread_count;
     long long total_size;
     volatile long long total_downloaded;
     volatile int should_stop;
+    volatile int error_flag;
     pthread_mutex_t file_mutex;
     pthread_mutex_t progress_mutex;
     modx_progress_callback progress_cb;
     void *progress_userdata;
 } ModxDownloader;
 
-// Parse URL to extract host and path
+// ---------- HTTP helpers ----------
+
 static int parse_url(const char *url, char *host, char *path, int *port) {
     const char *ptr = url;
-    int is_https = 0;
-    
     if (strncmp(ptr, "https://", 8) == 0) {
-        is_https = 1;
         ptr += 8;
         *port = HTTPS_PORT;
     } else if (strncmp(ptr, "http://", 7) == 0) {
@@ -57,13 +60,13 @@ static int parse_url(const char *url, char *host, char *path, int *port) {
     } else {
         return -1;
     }
-    
+
     int host_len = 0;
     while (*ptr && *ptr != '/' && *ptr != ':' && host_len < 255) {
         host[host_len++] = *ptr++;
     }
     host[host_len] = '\0';
-    
+
     if (*ptr == ':') {
         ptr++;
         *port = 0;
@@ -72,133 +75,104 @@ static int parse_url(const char *url, char *host, char *path, int *port) {
             ptr++;
         }
     }
-    
+
     if (*ptr == '/') {
         strcpy(path, ptr);
     } else {
         strcpy(path, "/");
     }
-    
-    return is_https;
+
+    return 0;
 }
 
-// Get file size from URL
-static long long get_file_size_internal(const char *url) {
-    char host[256] = {0};
-    char path[512] = {0};
-    int port = 80;
-    int sock;
-    struct hostent *he;
+static int connect_to_host(const char *host, int port) {
+    struct hostent *he = gethostbyname(host);
+    if (!he) return -1;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+
     struct sockaddr_in addr;
-    char request[1024];
-    char response[MAX_HEADER_SIZE];
-    long long size = -1;
-    
-    if (parse_url(url, host, path, &port) < 0) {
-        return -1;
-    }
-    
-    he = gethostbyname(host);
-    if (!he) {
-        return -1;
-    }
-    
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        return -1;
-    }
-    
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr = *(struct in_addr *)he->h_addr_list[0];
-    
+
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
         return -1;
     }
-    
+
+    return sock;
+}
+
+long long modx_get_file_size(const char *url) {
+    char host[256] = {0}, path[512] = {0};
+    int port = 80;
+
+    if (parse_url(url, host, path, &port) < 0) return -1;
+
+    int sock = connect_to_host(host, port);
+    if (sock < 0) return -1;
+
+    char request[1024];
     snprintf(request, sizeof(request),
-        "HEAD %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Connection: close\r\n"
-        "\r\n", path, host);
-    
+        "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+
     if (send(sock, request, strlen(request), 0) < 0) {
         close(sock);
         return -1;
     }
-    
+
+    char response[MAX_HEADER_SIZE];
     int received = recv(sock, response, sizeof(response) - 1, 0);
-    if (received > 0) {
-        response[received] = '\0';
-        char *content_length = strstr(response, "Content-Length:");
-        if (content_length) {
-            content_length += 15;
-            size = atoll(content_length);
-        }
-    }
-    
     close(sock);
-    return size;
+
+    if (received <= 0) return -1;
+    response[received] = '\0';
+
+    char *cl = strstr(response, "Content-Length:");
+    if (cl) {
+        cl += 15;
+        return atoll(cl);
+    }
+
+    return -1;
 }
 
-// Download a chunk
 static int download_chunk(const char *url, char *buffer, long long start, long long end) {
-    char host[256] = {0};
-    char path[512] = {0};
+    char host[256] = {0}, path[512] = {0};
     int port = 80;
-    int sock;
-    struct hostent *he;
-    struct sockaddr_in addr;
+
+    if (parse_url(url, host, path, &port) < 0) return -1;
+
+    int sock = connect_to_host(host, port);
+    if (sock < 0) return -1;
+
     char request[1024];
+    snprintf(request, sizeof(request),
+        "GET %s HTTP/1.1\r\nHost: %s\r\nRange: bytes=%lld-%lld\r\nConnection: close\r\n\r\n",
+        path, host, start, end);
+
+    if (send(sock, request, strlen(request), 0) < 0) {
+        close(sock);
+        return -1;
+    }
+
     char response[MAX_HEADER_SIZE];
-    int received = 0;
     int total_received = 0;
     int header_end = 0;
-    
-    if (parse_url(url, host, path, &port) < 0) {
-        return -1;
-    }
-    
-    he = gethostbyname(host);
-    if (!he) {
-        return -1;
-    }
-    
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        return -1;
-    }
-    
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr = *(struct in_addr *)he->h_addr_list[0];
-    
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(sock);
-        return -1;
-    }
-    
-    snprintf(request, sizeof(request),
-        "GET %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Range: bytes=%lld-%lld\r\n"
-        "Connection: close\r\n"
-        "\r\n", path, host, start, end);
-    
-    if (send(sock, request, strlen(request), 0) < 0) {
-        close(sock);
-        return -1;
-    }
-    
-    while ((received = recv(sock, response, sizeof(response), 0)) > 0) {
+
+    while (1) {
+        int received = recv(sock, response, sizeof(response), 0);
+        if (received <= 0) break;
+
         if (!header_end) {
-            char *body_start = strstr(response, "\r\n\r\n");
-            if (body_start) {
+            char *body = strstr(response, "\r\n\r\n");
+            if (body) {
                 header_end = 1;
-                body_start += 4;
-                int body_len = received - (body_start - response);
-                memcpy(buffer + total_received, body_start, body_len);
+                body += 4;
+                int body_len = received - (body - response);
+                memcpy(buffer + total_received, body, body_len);
                 total_received += body_len;
             }
         } else {
@@ -206,19 +180,17 @@ static int download_chunk(const char *url, char *buffer, long long start, long l
             total_received += received;
         }
     }
-    
+
     close(sock);
     return total_received;
 }
 
-// Write data to file
+// ---------- File writing ----------
+
 static int write_data(const char *filename, const char *data, int len, long long offset, pthread_mutex_t *mutex) {
-    FILE *fp = NULL;
-    int written = 0;
-    
     pthread_mutex_lock(mutex);
-    
-    fp = fopen(filename, "r+b");
+
+    FILE *fp = fopen(filename, "r+b");
     if (!fp) {
         fp = fopen(filename, "w+b");
         if (!fp) {
@@ -226,89 +198,117 @@ static int write_data(const char *filename, const char *data, int len, long long
             return 0;
         }
     }
-    
+
     if (fseek(fp, offset, SEEK_SET) != 0) {
         fclose(fp);
         pthread_mutex_unlock(mutex);
         return 0;
     }
-    
-    written = fwrite(data, 1, len, fp);
+
+    size_t written = fwrite(data, 1, len, fp);
     fclose(fp);
-    
+
     pthread_mutex_unlock(mutex);
-    
-    return written;
+    return (int)written;
 }
 
-// Download thread function
+// ---------- Download thread ----------
+
 static void* download_thread_func(void *arg) {
     DownloadThread *td = (DownloadThread *)arg;
-    ModxDownloader *downloader = (ModxDownloader *)td;
+    ModxDownloader *dl = td->downloader;
+
     char *buffer = malloc(MODX_BUFFER_SIZE);
-    
     if (!buffer) {
         td->complete = 1;
+        td->error = 1;
         return NULL;
     }
-    
+
     long long remaining = td->end_byte - td->start_byte + 1;
     long long offset = td->start_byte;
-    ModxDownloader *dl = (ModxDownloader *)td;  // This is a hack, we need better design
-    
-    while (remaining > 0) {
+    int retries = 0;
+
+    while (remaining > 0 && !dl->should_stop) {
         long long chunk_size = (remaining > MODX_BUFFER_SIZE) ? MODX_BUFFER_SIZE : remaining;
         int downloaded = download_chunk(td->url, buffer, offset, offset + chunk_size - 1);
-        
+
         if (downloaded <= 0) {
+            retries++;
+            if (retries >= MAX_RETRIES) {
+                td->error = 1;
+                dl->error_flag = 1;
+                dl->should_stop = 1;
+                break;
+            }
+            sleep(1);
+            continue;
+        }
+
+        int written = write_data(td->filename, buffer, downloaded,
+                                  td->start_byte + td->downloaded, &dl->file_mutex);
+
+        if (written != downloaded) {
+            td->error = 1;
+            dl->error_flag = 1;
+            dl->should_stop = 1;
             break;
         }
-        
-        // This is simplified, you'd need to pass downloader context properly
-        int written = write_data(td->filename, buffer, downloaded, td->start_byte + td->downloaded, NULL);
-        
-        if (written == downloaded) {
-            td->downloaded += written;
-            offset += chunk_size;
-            remaining -= chunk_size;
-        } else {
-            break;
+
+        td->downloaded += written;
+
+        pthread_mutex_lock(&dl->progress_mutex);
+        dl->total_downloaded += written;
+        long long total = dl->total_size;
+        pthread_mutex_unlock(&dl->progress_mutex);
+
+        // Call progress callback (4)
+        if (dl->progress_cb && total > 0) {
+            dl->progress_cb(dl->total_downloaded, total, dl->progress_userdata);
         }
+
+        offset += chunk_size;
+        remaining -= chunk_size;
+        retries = 0;
     }
-    
+
     free(buffer);
     td->complete = 1;
     return NULL;
 }
 
-// Public API functions
+// ---------- Public API ----------
 
 modx_handle modx_create(int thread_count) {
+    if (thread_count < 1) thread_count = 1;
+
     ModxDownloader *dl = malloc(sizeof(ModxDownloader));
     if (!dl) return NULL;
-    
+
     dl->threads = malloc(sizeof(DownloadThread) * thread_count);
     if (!dl->threads) {
         free(dl);
         return NULL;
     }
-    
+
     dl->thread_count = thread_count;
     dl->total_size = 0;
     dl->total_downloaded = 0;
     dl->should_stop = 0;
-    pthread_mutex_init(&dl->file_mutex, NULL);
-    pthread_mutex_init(&dl->progress_mutex, NULL);
+    dl->error_flag = 0;
     dl->progress_cb = NULL;
     dl->progress_userdata = NULL;
-    
+
+    pthread_mutex_init(&dl->file_mutex, NULL);
+    pthread_mutex_init(&dl->progress_mutex, NULL);
+
     return (modx_handle)dl;
 }
 
 void modx_destroy(modx_handle handle) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl) return;
-    
+
     pthread_mutex_destroy(&dl->file_mutex);
     pthread_mutex_destroy(&dl->progress_mutex);
     free(dl->threads);
@@ -318,33 +318,74 @@ void modx_destroy(modx_handle handle) {
 void modx_set_progress_callback(modx_handle handle, modx_progress_callback cb, void *userdata) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl) return;
-    
     dl->progress_cb = cb;
     dl->progress_userdata = userdata;
 }
 
-long long modx_get_file_size(const char *url) {
-    return get_file_size_internal(url);
-}
-
-int modx_download(modx_handle handle, const char *url, const char *filename) {
-    ModxDownloader *dl = (ModxDownloader *)handle;
-    if (!dl) return -1;
-    
-    // Implementation
-    return 0;
-}
-
 long long modx_get_downloaded(modx_handle handle) {
     ModxDownloader *dl = (ModxDownloader *)handle;
-    if (!dl) return 0;
-    
-    return dl->total_downloaded;
+    return dl ? dl->total_downloaded : 0;
 }
 
 long long modx_get_total_size(modx_handle handle) {
     ModxDownloader *dl = (ModxDownloader *)handle;
-    if (!dl) return 0;
-    
-    return dl->total_size;
+    return dl ? dl->total_size : 0;
+}
+
+int modx_download(modx_handle handle, const char *url, const char *filename) {
+    ModxDownloader *dl = (ModxDownloader *)handle;
+    if (!dl || !url || !filename) return -1;
+
+    // 1. Get file size
+    dl->total_size = modx_get_file_size(url);
+    if (dl->total_size <= 0) {
+        return -1;  // Error: cannot get file size
+    }
+
+    // 2. Pre-allocate file
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) return -1;
+    fseek(fp, dl->total_size - 1, SEEK_SET);
+    fputc(0, fp);
+    fclose(fp);
+
+    // 3. Initialize threads
+    long long seg = dl->total_size / dl->thread_count;
+    for (int i = 0; i < dl->thread_count; i++) {
+        DownloadThread *td = &dl->threads[i];
+        td->id = i;
+        strncpy(td->url, url, sizeof(td->url) - 1);
+        td->url[sizeof(td->url) - 1] = '\0';
+        strncpy(td->filename, filename, sizeof(td->filename) - 1);
+        td->filename[sizeof(td->filename) - 1] = '\0';
+        td->start_byte = (long long)i * seg;
+        td->end_byte = (i == dl->thread_count - 1) ?
+            dl->total_size - 1 : (long long)(i + 1) * seg - 1;
+        td->downloaded = 0;
+        td->complete = 0;
+        td->error = 0;
+        td->downloader = dl;  // 2. Fix context passing
+    }
+
+    // Reset state
+    dl->total_downloaded = 0;
+    dl->should_stop = 0;
+    dl->error_flag = 0;
+
+    // 4. Start threads
+    for (int i = 0; i < dl->thread_count; i++) {
+        pthread_create(&dl->threads[i].thread, NULL, download_thread_func, &dl->threads[i]);
+    }
+
+    // 5. Wait for threads
+    for (int i = 0; i < dl->thread_count; i++) {
+        pthread_join(dl->threads[i].thread, NULL);
+    }
+
+    // 6. Check result
+    if (dl->error_flag || dl->total_downloaded < dl->total_size) {
+        return -1;
+    }
+
+    return 0;  // Success
 }
