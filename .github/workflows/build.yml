@@ -1,99 +1,84 @@
-name: Build and Test MoDx
+name: MoDx Multi-Arch Release
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-  release:
-    types: [ published, created ]
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  build-linux-x86_64:
-    name: Linux x86_64
-    runs-on: ubuntu-22.04
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            cc: gcc
+            cflags: "-fPIC -Wall -Wextra"
+            extra_pkgs: ""
+
+          - platform: linux-arm64
+            cc: aarch64-linux-gnu-gcc
+            cflags: "-fPIC -Wall -Wextra"
+            extra_pkgs: "gcc-aarch64-linux-gnu"
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Compile library
-      run: |
-        gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
-    - name: Compile executable
-      run: |
-        gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-    - name: Test
-      run: |
-        file modx libmodx.so
-    - name: Upload artifact (library)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-x86_64-lib
-        path: libmodx.so
-    - name: Upload artifact (executable)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-x86_64-exe
-        path: modx
-  build-linux-arm64:
-    name: Linux ARM64
-    runs-on: ubuntu-22.04
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install cross-compile tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-    - name: Compile library
-      run: |
-        aarch64-linux-gnu-gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
-    - name: Compile executable
-      run: |
-        aarch64-linux-gnu-gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
-    - name: Upload artifact (library)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-arm64-lib
-        path: libmodx.so
-    - name: Upload artifact (executable)
-      uses: actions/upload-artifact@v4
-      with:
-        name: modx-linux-arm64-exe
-        path: modx
+      - uses: actions/checkout@v4
+
+      - name: Install base tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Install extra packages
+        if: matrix.extra_pkgs != ''
+        run: sudo apt-get install -y ${{ matrix.extra_pkgs }}
+
+      - name: Build
+        run: |
+          ${{ matrix.cc }} ${{ matrix.cflags }} -shared -o libmodx.so modx_lib.c -lpthread -lm
+          ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c -L. -lmodx -lpthread -lm -Wl,-rpath,.
+
+      - name: Package into ZIP
+        run: |
+          zip MoDx-${{ matrix.platform }}.zip libmodx.so modx
+
+      - name: Upload ZIP as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoDx-${{ matrix.platform }}
+          path: ./MoDx-${{ matrix.platform }}.zip
+
   release:
-    name: Create Release Package
-    needs: [build-linux-x86_64, build-linux-arm64]
-    runs-on: ubuntu-22.04
-    if: github.event_name == 'push' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    needs: build
     permissions:
       contents: write
+    if: github.ref == 'refs/heads/main'
     steps:
-    - uses: actions/checkout@v4
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
+      - uses: actions/checkout@v4
 
-    - name: Prepare release package
-      run: |
-        set -e
-        mkdir -p release/linux-x86_64
-        mkdir -p release/linux-arm64
-        cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
-        cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
-        cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
-        cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
-        cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
-        cd ..
-        ls -lh modx-${{ github.ref_name }}.tar.gz
+      - name: Generate timestamp
+        id: ts
+        run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
-    - name: Auto Release (Nightly)
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: nightly-${{ github.run_number }}
-        name: "Nightly Build #${{ github.run_number }}"
-        body: "Auto-compiled from commit ${{ github.sha }}"
-        draft: false
-        prerelease: true
-        files: modx-${{ github.ref_name }}.tar.gz
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all ZIP artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly-${{ steps.ts.outputs.time }}
+          name: "MoDx Nightly ${{ steps.ts.outputs.time }}"
+          files: ./artifacts/MoDx-*/*.zip
+          draft: false
+          prerelease: true
+          body: |
+
+            Supported architectures:
+            - Linux x86_64
+            - Linux ARM64
+
+            Commit: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
