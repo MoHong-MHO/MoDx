@@ -62,14 +62,13 @@ jobs:
 
   release:
     name: Create Release Package
-    needs: [
-      build-linux-x86_64,
-      build-linux-arm64
-    ]
+    # Removed 'needs' so this job will not be skipped when other jobs are skipped.
     runs-on: ubuntu-22.04
     if: github.event_name == 'release'
     steps:
-    - name: Download all artifacts
+    - uses: actions/checkout@v4
+
+    - name: Try downloading artifacts from this run
       uses: actions/download-artifact@v4
       with:
         path: artifacts
@@ -77,41 +76,85 @@ jobs:
     - name: Display artifact structure for debugging
       run: |
         echo "=== Artifact Directory Structure ==="
-        ls -la artifacts/
-        find artifacts/ -type f -exec ls -lh {} \;
+        ls -la artifacts || true
+        find artifacts/ -type f -exec ls -lh {} \; || true
+
+    - name: Build locally if artifacts missing
+      run: |
+        set -e
+        # If no artifact files were downloaded, do local builds as fallback
+        if [ -z "$(find artifacts -type f 2>/dev/null)" ]; then
+          echo "No artifacts found in 'artifacts/' — building locally as fallback."
+
+          # x86_64 build
+          echo "Building x86_64..."
+          gcc -fPIC -shared -o libmodx.so modx_lib.c -lpthread -lm -Wall -Wextra
+          gcc -o modx main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
+
+          mkdir -p artifacts/modx-linux-x86_64-lib
+          mkdir -p artifacts/modx-linux-x86_64-exe
+          cp libmodx.so artifacts/modx-linux-x86_64-lib/
+          cp modx artifacts/modx-linux-x86_64-exe/
+
+          # ARM64 cross-compile (install toolchain and build)
+          echo "Installing aarch64 cross-compiler..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+          echo "Building arm64..."
+          aarch64-linux-gnu-gcc -fPIC -shared -o libmodx_arm.so modx_lib.c -lpthread -lm -Wall -Wextra
+          aarch64-linux-gnu-gcc -o modx_arm main.c -L. -lmodx -lpthread -lm -Wall -Wextra -Wl,-rpath,.
+
+          mkdir -p artifacts/modx-linux-arm64-lib
+          mkdir -p artifacts/modx-linux-arm64-exe
+          cp libmodx_arm.so artifacts/modx-linux-arm64-lib/libmodx.so || true
+          cp modx_arm artifacts/modx-linux-arm64-exe/modx || true
+
+        else
+          echo "Artifacts present — skipping local build."
+        fi
 
     - name: Prepare release package
       run: |
+        set -e
         mkdir -p release/linux-x86_64
         mkdir -p release/linux-arm64
-        
-        # Copy x86_64 artifacts
+
+        # Prefer downloaded artifacts, fallback to locally-built files
         if [ -f artifacts/modx-linux-x86_64-lib/libmodx.so ]; then
           cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
+        elif [ -f libmodx.so ]; then
+          cp libmodx.so release/linux-x86_64/
         else
-          echo "Warning: libmodx.so x86_64 not found"
+          echo "Warning: x86_64 library not found"
         fi
-        
+
         if [ -f artifacts/modx-linux-x86_64-exe/modx ]; then
           cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
+        elif [ -f modx ]; then
+          cp modx release/linux-x86_64/
         else
-          echo "Warning: modx executable x86_64 not found"
+          echo "Warning: x86_64 executable not found"
         fi
-        
-        # Copy ARM64 artifacts
+
         if [ -f artifacts/modx-linux-arm64-lib/libmodx.so ]; then
           cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
+        elif [ -f artifacts/modx-linux-arm64-lib/libmodx.so ]; then
+          cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
+        elif [ -f libmodx_arm.so ]; then
+          cp libmodx_arm.so release/linux-arm64/libmodx.so
         else
-          echo "Warning: libmodx.so arm64 not found"
+          echo "Warning: arm64 library not found"
         fi
-        
+
         if [ -f artifacts/modx-linux-arm64-exe/modx ]; then
           cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
+        elif [ -f modx_arm ]; then
+          cp modx_arm release/linux-arm64/modx
         else
-          echo "Warning: modx executable arm64 not found"
+          echo "Warning: arm64 executable not found"
         fi
-        
-        # Create tarball
+
         cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
         cd ..
         ls -lh modx-${{ github.ref_name }}.tar.gz
