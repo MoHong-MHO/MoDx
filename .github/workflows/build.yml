@@ -65,7 +65,7 @@ jobs:
     name: Create Release Package
     # Removed 'needs' so this job will not be skipped when other jobs are skipped.
     runs-on: ubuntu-22.04
-    if: github.event_name == 'release'
+    if: github.event_name == 'push'
     steps:
     - uses: actions/checkout@v4
 
