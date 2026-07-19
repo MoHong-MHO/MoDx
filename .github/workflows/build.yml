@@ -69,28 +69,58 @@ jobs:
     runs-on: ubuntu-22.04
     if: github.event_name == 'release'
     steps:
-    - name: Download artifacts
+    - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
-    - name: Package
+
+    - name: Display artifact structure for debugging
+      run: |
+        echo "=== Artifact Directory Structure ==="
+        ls -la artifacts/
+        find artifacts/ -type f -exec ls -lh {} \;
+
+    - name: Prepare release package
       run: |
         mkdir -p release/linux-x86_64
         mkdir -p release/linux-arm64
         
-        cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
-        cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
+        # Copy x86_64 artifacts
+        if [ -f artifacts/modx-linux-x86_64-lib/libmodx.so ]; then
+          cp artifacts/modx-linux-x86_64-lib/libmodx.so release/linux-x86_64/
+        else
+          echo "Warning: libmodx.so x86_64 not found"
+        fi
         
-        cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
-        cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
+        if [ -f artifacts/modx-linux-x86_64-exe/modx ]; then
+          cp artifacts/modx-linux-x86_64-exe/modx release/linux-x86_64/
+        else
+          echo "Warning: modx executable x86_64 not found"
+        fi
         
+        # Copy ARM64 artifacts
+        if [ -f artifacts/modx-linux-arm64-lib/libmodx.so ]; then
+          cp artifacts/modx-linux-arm64-lib/libmodx.so release/linux-arm64/
+        else
+          echo "Warning: libmodx.so arm64 not found"
+        fi
+        
+        if [ -f artifacts/modx-linux-arm64-exe/modx ]; then
+          cp artifacts/modx-linux-arm64-exe/modx release/linux-arm64/
+        else
+          echo "Warning: modx executable arm64 not found"
+        fi
+        
+        # Create tarball
         cd release && tar -czf ../modx-${{ github.ref_name }}.tar.gz *
-    - name: Upload release
-      uses: actions/upload-release-asset@v1
+        cd ..
+        ls -lh modx-${{ github.ref_name }}.tar.gz
+
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: modx-${{ github.ref_name }}.tar.gz
+        draft: false
+        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./modx-${{ github.ref_name }}.tar.gz
-        asset_name: modx-${{ github.ref_name }}.tar.gz
-        asset_content_type: application/gzip
