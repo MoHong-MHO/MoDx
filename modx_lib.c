@@ -25,6 +25,7 @@ typedef struct {
     int id;
     char url[512];
     char filename[256];
+    char tmp_filename[512];
     long long start_byte;
     long long end_byte;
     long long downloaded;
@@ -50,23 +51,56 @@ typedef struct ModxDownloader {
 
 // ---------- Progress file helpers ----------
 
-static void save_progress(const char *filename, long long downloaded) {
+static void save_thread_progress(DownloadThread *td) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress.%d", td->filename, td->id);
+    FILE *fp = fopen(progress_path, "w");
+    if (!fp) return;
+    fprintf(fp, "%lld %lld %lld", td->start_byte, td->end_byte, td->downloaded);
+    fclose(fp);
+}
+
+static long long load_thread_progress(const char *filename, int id, long long *start, long long *end) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress.%d", filename, id);
+    FILE *fp = fopen(progress_path, "r");
+    if (!fp) return -1;
+
+    long long downloaded = 0;
+    if (fscanf(fp, "%lld %lld %lld", start, end, &downloaded) != 3) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    return downloaded;
+}
+
+static void remove_thread_progress(const char *filename, int id) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress.%d", filename, id);
+    remove(progress_path);
+}
+
+static void remove_all_progress(const char *filename, int thread_count) {
+    for (int i = 0; i < thread_count; i++) {
+        remove_thread_progress(filename, i);
+    }
+}
+
+static void save_total_progress(const char *filename, long long downloaded) {
     char progress_path[512];
     snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
-
     FILE *fp = fopen(progress_path, "w");
     if (!fp) return;
     fprintf(fp, "%lld", downloaded);
     fclose(fp);
 }
 
-static long long load_progress(const char *filename) {
+static long long load_total_progress(const char *filename) {
     char progress_path[512];
     snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
-
     FILE *fp = fopen(progress_path, "r");
     if (!fp) return -1;
-
     long long downloaded = 0;
     if (fscanf(fp, "%lld", &downloaded) != 1) {
         fclose(fp);
@@ -76,14 +110,14 @@ static long long load_progress(const char *filename) {
     return downloaded;
 }
 
-static void remove_progress(const char *filename) {
+static void remove_total_progress(const char *filename) {
     char progress_path[512];
     snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
     remove(progress_path);
 }
 
 int modx_can_resume(const char *filename) {
-    return load_progress(filename) >= 0;
+    return load_total_progress(filename) >= 0;
 }
 
 // ---------- HTTP helpers ----------
@@ -265,7 +299,7 @@ static void* download_thread_func(void *arg) {
     }
 
     long long remaining = td->end_byte - td->start_byte + 1;
-    long long offset = td->start_byte;
+    long long offset = td->start_byte + td->downloaded;
     int retries = 0;
 
     while (remaining > 0 && !dl->should_stop) {
@@ -284,8 +318,7 @@ static void* download_thread_func(void *arg) {
             continue;
         }
 
-        int written = write_data(td->filename, buffer, downloaded,
-                                  td->start_byte + td->downloaded, &dl->file_mutex);
+        int written = write_data(td->filename, buffer, downloaded, offset, &dl->file_mutex);
 
         if (written != downloaded) {
             td->error = 1;
@@ -305,8 +338,9 @@ static void* download_thread_func(void *arg) {
             dl->progress_cb(dl->total_downloaded, total, dl->progress_userdata);
         }
 
-        // Save progress after each chunk
-        save_progress(td->filename, dl->total_downloaded);
+        // Save thread progress
+        save_thread_progress(td);
+        save_total_progress(td->filename, dl->total_downloaded);
 
         offset += chunk_size;
         remaining -= chunk_size;
@@ -316,6 +350,37 @@ static void* download_thread_func(void *arg) {
     free(buffer);
     td->complete = 1;
     return NULL;
+}
+
+// ---------- Merge temp files ----------
+
+static int merge_thread_files(const char *filename, int thread_count) {
+    FILE *final_fp = fopen(filename, "wb");
+    if (!final_fp) return 0;
+
+    for (int i = 0; i < thread_count; i++) {
+        char tmp_path[512];
+        snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", filename, i);
+        FILE *tmp_fp = fopen(tmp_path, "rb");
+        if (!tmp_fp) {
+            fclose(final_fp);
+            return 0;
+        }
+        char buf[MODX_BUFFER_SIZE];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), tmp_fp)) > 0) {
+            if (fwrite(buf, 1, n, final_fp) != n) {
+                fclose(tmp_fp);
+                fclose(final_fp);
+                return 0;
+            }
+        }
+        fclose(tmp_fp);
+        remove(tmp_path);
+    }
+
+    fclose(final_fp);
+    return 1;
 }
 
 // ---------- Public API ----------
@@ -377,8 +442,8 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl || !url || !filename) return -1;
 
-    // Check for existing progress (resume support)
-    long long existing = load_progress(filename);
+    // Check for existing progress
+    long long existing = load_total_progress(filename);
     if (existing > 0) {
         printf("[Resume] Continuing from %lld bytes\n", existing);
         dl->total_downloaded = existing;
@@ -390,9 +455,9 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         return -1;
     }
 
-    // If already complete
     if (existing >= dl->total_size) {
-        remove_progress(filename);
+        remove_total_progress(filename);
+        remove_all_progress(filename, dl->thread_count);
         return 0;
     }
 
@@ -415,24 +480,27 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         td->url[sizeof(td->url) - 1] = '\0';
         strncpy(td->filename, filename, sizeof(td->filename) - 1);
         td->filename[sizeof(td->filename) - 1] = '\0';
+        snprintf(td->tmp_filename, sizeof(td->tmp_filename), "%s.tmp.%d", filename, i);
         td->start_byte = (long long)i * seg;
         td->end_byte = (i == dl->thread_count - 1) ?
             dl->total_size - 1 : (long long)(i + 1) * seg - 1;
-
-        // Adjust start if resuming
-        if (existing > 0) {
-            if (td->start_byte < existing) {
-                td->start_byte = existing;
-            }
-        }
-
         td->downloaded = 0;
         td->complete = 0;
         td->error = 0;
         td->downloader = dl;
+
+        // Load thread progress if resuming
+        long long start, end;
+        long long thread_done = load_thread_progress(filename, i, &start, &end);
+        if (thread_done > 0) {
+            td->start_byte = start;
+            td->end_byte = end;
+            td->downloaded = thread_done;
+            dl->total_downloaded += thread_done;
+            printf("[Resume] Thread %d: %lld/%lld bytes\n", i, thread_done, end - start + 1);
+        }
     }
 
-    // Reset state
     dl->should_stop = 0;
     dl->error_flag = 0;
 
@@ -448,11 +516,17 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
 
     // Check result
     if (dl->error_flag || dl->total_downloaded < dl->total_size) {
-        save_progress(filename, dl->total_downloaded);
+        save_total_progress(filename, dl->total_downloaded);
         return -1;
     }
 
-    // Success: remove progress file
-    remove_progress(filename);
+    // Merge thread files
+    if (!merge_thread_files(filename, dl->thread_count)) {
+        return -1;
+    }
+
+    // Cleanup
+    remove_total_progress(filename);
+    remove_all_progress(filename, dl->thread_count);
     return 0;
 }

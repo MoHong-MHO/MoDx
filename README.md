@@ -2,7 +2,7 @@
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/MoHong-MHO/MoDx/build.yml?branch=main)](https://github.com/MoHong-MHO/MoDx/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.2--beta-orange)](https://github.com/MoHong-MHO/MoDx/releases)
+[![Version](https://img.shields.io/badge/version-v1.4--beta-orange)](https://github.com/MoHong-MHO/MoDx/releases)
 
 > A lightweight, multi-threaded command-line downloader built in C.  
 > Supports Linux x86_64 and ARM64 with minimal dependencies.
@@ -24,11 +24,12 @@ MoDx is a lightweight, multi-threaded HTTP downloader written in C. It focuses o
 
 **Key Features:**
 
-- Multi-threaded download (default 2 threads, configurable up to 16)
+- Multi-threaded download (configurable threads, default 2, max 16)
+- Multi-thread resume support (each thread tracks its own progress)
 - HTTP Range request support
-- Resumable download (via `.tmp` file mechanism, planned)
 - Real-time progress display (percentage)
-- Bilingual interface (English / Chinese, auto-detected)
+- Command line options (`-t`, `-o`, `-h`, `-v`)
+- Bilingual interface (English / Chinese, auto-detected by LANG)
 - Zero extra dependencies beyond standard C library and POSIX sockets
 - Lightweight: ~5KB executable, ~6KB shared library
 
@@ -97,12 +98,29 @@ Examples:
 
 ---
 
+Resume Support
+
+MoDx supports multi-thread resume. If a download is interrupted (e.g., Ctrl+C), simply run the same command again to continue from where it left off.
+
+Progress files:
+
+File Description
+filename.progress Total downloaded bytes
+filename.progress.0 Thread 0 progress
+filename.progress.1 Thread 1 progress
+filename.tmp.0 Thread 0 temporary data
+filename.tmp.1 Thread 1 temporary data
+
+All progress and temporary files are automatically removed upon successful completion.
+
+---
+
 Project Structure
 
 ```
 MoDx/
 ├── main.c          # CLI entry point
-├── modx_lib.c      # Download kernel (multi-thread, HTTP, Range)
+├── modx_lib.c      # Download kernel (multi-thread, HTTP, Range, Resume)
 ├── modx_lib.h      # Public API
 ├── LICENSE         # MIT License
 └── README.md       # This file
@@ -113,13 +131,6 @@ MoDx/
 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-Acknowledgments
-
-· Built with standard C library and POSIX sockets
-· No external dependencies
 
 ---
 
@@ -137,11 +148,12 @@ MoDx 是一个轻量级的多线程 HTTP 下载器，使用 C 语言编写。它
 
 核心特性：
 
-· 多线程下载（默认 2 线程，可配置最多 16 线程）
+· 多线程下载（可配置线程数，默认 2，最大 16）
+· 多线程断点续传（每个线程独立记录进度）
 · HTTP Range 请求支持
-· 断点续传支持（通过 .tmp 文件机制，规划中）
 · 实时进度显示（百分比）
-· 双语界面（英文 / 中文，自动检测）
+· 命令行选项（-t、-o、-h、-v）
+· 双语界面（英文 / 中文，通过 LANG 环境变量自动检测）
 · 除标准 C 库和 POSIX socket 外无额外依赖
 · 轻量级：可执行文件约 5KB，动态库约 6KB
 
@@ -209,12 +221,29 @@ aarch64-linux-gnu-gcc -o modx main.c modx_lib.c -lpthread -lm -Wall -Wextra
 
 ---
 
+断点续传
+
+MoDx 支持多线程断点续传。如果下载被中断（例如按 Ctrl+C），只需再次运行相同命令即可从中断处继续下载。
+
+进度文件说明：
+
+文件 说明
+filename.progress 总已下载字节数
+filename.progress.0 线程 0 的进度
+filename.progress.1 线程 1 的进度
+filename.tmp.0 线程 0 的临时数据
+filename.tmp.1 线程 1 的临时数据
+
+下载完成后，所有进度文件和临时文件会自动删除。
+
+---
+
 项目结构
 
 ```
 MoDx/
 ├── main.c          # 命令行入口
-├── modx_lib.c      # 下载内核（多线程、HTTP、Range）
+├── modx_lib.c      # 下载内核（多线程、HTTP、Range、断点续传）
 ├── modx_lib.h      # 公开 API
 ├── LICENSE         # MIT 许可证
 └── README.md       # 本文件
@@ -225,13 +254,6 @@ MoDx/
 许可证
 
 本项目采用 MIT 许可证 - 详见 LICENSE 文件。
-
----
-
-致谢
-
-· 使用标准 C 库和 POSIX socket 构建
-· 无外部依赖
 
 ---
 

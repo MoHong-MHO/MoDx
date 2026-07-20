@@ -89,7 +89,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Parse arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_help();
@@ -126,7 +125,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Determine output filename
     char filename[256];
     if (strlen(g_output_filename) > 0) {
         strncpy(filename, g_output_filename, sizeof(filename) - 1);
@@ -141,7 +139,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Check for resume
     if (modx_can_resume(filename)) {
         msg("Resuming previous download...\n", "检测到未完成的下载，继续中...\n");
     }
