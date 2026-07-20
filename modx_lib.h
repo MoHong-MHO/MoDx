@@ -27,8 +27,11 @@ void modx_set_progress_callback(modx_handle handle, modx_progress_callback cb, v
 // Get file size from URL
 long long modx_get_file_size(const char *url);
 
-// Download file
+// Download file (with resume support)
 int modx_download(modx_handle handle, const char *url, const char *filename);
+
+// Check if a download can be resumed
+int modx_can_resume(const char *filename);
 
 // Get downloaded bytes
 long long modx_get_downloaded(modx_handle handle);

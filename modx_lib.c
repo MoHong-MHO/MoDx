@@ -18,6 +18,7 @@
 #define HTTPS_PORT 443
 #define MAX_HEADER_SIZE 4096
 #define MAX_RETRIES 3
+#define PROGRESS_SUFFIX ".progress"
 
 // Thread data
 typedef struct {
@@ -30,7 +31,7 @@ typedef struct {
     int complete;
     int error;
     pthread_t thread;
-    struct ModxDownloader *downloader;  // pointer to parent
+    struct ModxDownloader *downloader;
 } DownloadThread;
 
 // Main downloader structure
@@ -46,6 +47,44 @@ typedef struct ModxDownloader {
     modx_progress_callback progress_cb;
     void *progress_userdata;
 } ModxDownloader;
+
+// ---------- Progress file helpers ----------
+
+static void save_progress(const char *filename, long long downloaded) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
+
+    FILE *fp = fopen(progress_path, "w");
+    if (!fp) return;
+    fprintf(fp, "%lld", downloaded);
+    fclose(fp);
+}
+
+static long long load_progress(const char *filename) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
+
+    FILE *fp = fopen(progress_path, "r");
+    if (!fp) return -1;
+
+    long long downloaded = 0;
+    if (fscanf(fp, "%lld", &downloaded) != 1) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    return downloaded;
+}
+
+static void remove_progress(const char *filename) {
+    char progress_path[512];
+    snprintf(progress_path, sizeof(progress_path), "%s.progress", filename);
+    remove(progress_path);
+}
+
+int modx_can_resume(const char *filename) {
+    return load_progress(filename) >= 0;
+}
 
 // ---------- HTTP helpers ----------
 
@@ -262,10 +301,12 @@ static void* download_thread_func(void *arg) {
         long long total = dl->total_size;
         pthread_mutex_unlock(&dl->progress_mutex);
 
-        // Call progress callback (4)
         if (dl->progress_cb && total > 0) {
             dl->progress_cb(dl->total_downloaded, total, dl->progress_userdata);
         }
+
+        // Save progress after each chunk
+        save_progress(td->filename, dl->total_downloaded);
 
         offset += chunk_size;
         remaining -= chunk_size;
@@ -336,20 +377,36 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl || !url || !filename) return -1;
 
-    // 1. Get file size
-    dl->total_size = modx_get_file_size(url);
-    if (dl->total_size <= 0) {
-        return -1;  // Error: cannot get file size
+    // Check for existing progress (resume support)
+    long long existing = load_progress(filename);
+    if (existing > 0) {
+        printf("[Resume] Continuing from %lld bytes\n", existing);
+        dl->total_downloaded = existing;
     }
 
-    // 2. Pre-allocate file
-    FILE *fp = fopen(filename, "wb");
-    if (!fp) return -1;
-    fseek(fp, dl->total_size - 1, SEEK_SET);
-    fputc(0, fp);
+    // Get file size
+    dl->total_size = modx_get_file_size(url);
+    if (dl->total_size <= 0) {
+        return -1;
+    }
+
+    // If already complete
+    if (existing >= dl->total_size) {
+        remove_progress(filename);
+        return 0;
+    }
+
+    // Pre-allocate file
+    FILE *fp = fopen(filename, "rb+");
+    if (!fp) {
+        fp = fopen(filename, "wb");
+        if (!fp) return -1;
+        fseek(fp, dl->total_size - 1, SEEK_SET);
+        fputc(0, fp);
+    }
     fclose(fp);
 
-    // 3. Initialize threads
+    // Initialize threads
     long long seg = dl->total_size / dl->thread_count;
     for (int i = 0; i < dl->thread_count; i++) {
         DownloadThread *td = &dl->threads[i];
@@ -361,31 +418,41 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         td->start_byte = (long long)i * seg;
         td->end_byte = (i == dl->thread_count - 1) ?
             dl->total_size - 1 : (long long)(i + 1) * seg - 1;
+
+        // Adjust start if resuming
+        if (existing > 0) {
+            if (td->start_byte < existing) {
+                td->start_byte = existing;
+            }
+        }
+
         td->downloaded = 0;
         td->complete = 0;
         td->error = 0;
-        td->downloader = dl;  // 2. Fix context passing
+        td->downloader = dl;
     }
 
     // Reset state
-    dl->total_downloaded = 0;
     dl->should_stop = 0;
     dl->error_flag = 0;
 
-    // 4. Start threads
+    // Start threads
     for (int i = 0; i < dl->thread_count; i++) {
         pthread_create(&dl->threads[i].thread, NULL, download_thread_func, &dl->threads[i]);
     }
 
-    // 5. Wait for threads
+    // Wait for threads
     for (int i = 0; i < dl->thread_count; i++) {
         pthread_join(dl->threads[i].thread, NULL);
     }
 
-    // 6. Check result
+    // Check result
     if (dl->error_flag || dl->total_downloaded < dl->total_size) {
+        save_progress(filename, dl->total_downloaded);
         return -1;
     }
 
-    return 0;  // Success
+    // Success: remove progress file
+    remove_progress(filename);
+    return 0;
 }

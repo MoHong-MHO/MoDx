@@ -7,10 +7,10 @@
 #include <unistd.h>
 #include "modx_lib.h"
 
-#define VERSION "1.0.0"
+#define VERSION "1.2.0"
 
 static int g_lang_is_chinese = 0;
-static int g_thread_count = MODX_THREAD_COUNT;  // 默认 2
+static int g_thread_count = MODX_THREAD_COUNT;
 static char g_output_filename[256] = {0};
 
 static void detect_language(void) {
@@ -65,7 +65,6 @@ static void print_help(void) {
 static void print_version(void) {
     printf("MoDx version %s\n", VERSION);
     printf("Supported architectures: Linux x86_64, Linux ARM64\n");
-    printf("Built with: HTTP range request, multi-thread download\n");
 }
 
 static void progress_callback(long long downloaded, long long total, void *userdata) {
@@ -81,18 +80,16 @@ int main(int argc, char *argv[]) {
     char url[512] = {0};
     char *last_slash = NULL;
     modx_handle downloader = NULL;
-    int opt;
 
     detect_language();
 
-    // Simple argument parsing (no getopt dependency)
     if (argc < 2) {
         msg("Usage: %s [options] <URL>\n", "用法: %s [选项] <URL>\n", argv[0]);
         msg("Try '%s -h' for more information.\n", "尝试 '%s -h' 获取更多信息。\n", argv[0]);
         return 1;
     }
 
-    // Parse arguments manually
+    // Parse arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_help();
@@ -118,13 +115,11 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
         } else {
-            // Assume it's the URL
             strncpy(url, argv[i], sizeof(url) - 1);
             url[sizeof(url) - 1] = '\0';
         }
     }
 
-    // Check if URL is provided
     if (strlen(url) == 0) {
         msg("Error: No URL provided\n", "错误: 未提供 URL\n");
         msg("Try '%s -h' for more information.\n", "尝试 '%s -h' 获取更多信息。\n", argv[0]);
@@ -137,7 +132,6 @@ int main(int argc, char *argv[]) {
         strncpy(filename, g_output_filename, sizeof(filename) - 1);
         filename[sizeof(filename) - 1] = '\0';
     } else {
-        // Extract from URL
         last_slash = strrchr(url, '/');
         if (last_slash && *(last_slash + 1) != '\0') {
             strncpy(filename, last_slash + 1, sizeof(filename) - 1);
@@ -147,12 +141,16 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Check for resume
+    if (modx_can_resume(filename)) {
+        msg("Resuming previous download...\n", "检测到未完成的下载，继续中...\n");
+    }
+
     msg("Starting download...\n", "开始下载...\n");
     msg("URL: %s\n", "URL: %s\n", url);
     msg("File: %s\n", "文件: %s\n", filename);
     msg("Threads: %d\n", "线程数: %d\n", g_thread_count);
 
-    // Create downloader with user-specified thread count
     downloader = modx_create(g_thread_count);
     if (!downloader) {
         msg("Error: Failed to create downloader\n", "错误: 无法创建下载器\n");
