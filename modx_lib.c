@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <time.h>
 
 #define HTTP_PORT 80
 #define HTTPS_PORT 443
@@ -43,10 +44,15 @@ typedef struct ModxDownloader {
     volatile long long total_downloaded;
     volatile int should_stop;
     volatile int error_flag;
+    char user_agent[256];
+    char server_ip[64];
     pthread_mutex_t file_mutex;
     pthread_mutex_t progress_mutex;
     modx_progress_callback progress_cb;
     void *progress_userdata;
+    time_t last_speed_time;
+    long long last_speed_bytes;
+    double current_speed;
 } ModxDownloader;
 
 // ---------- Progress file helpers ----------
@@ -158,7 +164,7 @@ static int parse_url(const char *url, char *host, char *path, int *port) {
     return 0;
 }
 
-static int connect_to_host(const char *host, int port) {
+static int connect_to_host(const char *host, int port, char *ip_out) {
     struct hostent *he = gethostbyname(host);
     if (!he) return -1;
 
@@ -169,6 +175,11 @@ static int connect_to_host(const char *host, int port) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr = *(struct in_addr *)he->h_addr_list[0];
+
+    if (ip_out) {
+        strncpy(ip_out, inet_ntoa(addr.sin_addr), 63);
+        ip_out[63] = '\0';
+    }
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
@@ -184,7 +195,7 @@ long long modx_get_file_size(const char *url) {
 
     if (parse_url(url, host, path, &port) < 0) return -1;
 
-    int sock = connect_to_host(host, port);
+    int sock = connect_to_host(host, port, NULL);
     if (sock < 0) return -1;
 
     char request[1024];
@@ -212,19 +223,38 @@ long long modx_get_file_size(const char *url) {
     return -1;
 }
 
-static int download_chunk(const char *url, char *buffer, long long start, long long end) {
+const char* modx_get_server_ip(const char *url) {
+    static char ip[64];
+    char host[256] = {0}, path[512] = {0};
+    int port = 80;
+
+    if (parse_url(url, host, path, &port) < 0) return NULL;
+
+    int sock = connect_to_host(host, port, ip);
+    if (sock < 0) return NULL;
+    close(sock);
+
+    return ip;
+}
+
+static int download_chunk(const char *url, char *buffer, long long start, long long end, const char *user_agent) {
     char host[256] = {0}, path[512] = {0};
     int port = 80;
 
     if (parse_url(url, host, path, &port) < 0) return -1;
 
-    int sock = connect_to_host(host, port);
+    int sock = connect_to_host(host, port, NULL);
     if (sock < 0) return -1;
 
-    char request[1024];
+    char request[2048];
     snprintf(request, sizeof(request),
-        "GET %s HTTP/1.1\r\nHost: %s\r\nRange: bytes=%lld-%lld\r\nConnection: close\r\n\r\n",
-        path, host, start, end);
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Range: bytes=%lld-%lld\r\n"
+        "User-Agent: %s\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        path, host, start, end, user_agent ? user_agent : "MoDx/1.4");
 
     if (send(sock, request, strlen(request), 0) < 0) {
         close(sock);
@@ -304,7 +334,7 @@ static void* download_thread_func(void *arg) {
 
     while (remaining > 0 && !dl->should_stop) {
         long long chunk_size = (remaining > MODX_BUFFER_SIZE) ? MODX_BUFFER_SIZE : remaining;
-        int downloaded = download_chunk(td->url, buffer, offset, offset + chunk_size - 1);
+        int downloaded = download_chunk(td->url, buffer, offset, offset + chunk_size - 1, dl->user_agent);
 
         if (downloaded <= 0) {
             retries++;
@@ -332,13 +362,31 @@ static void* download_thread_func(void *arg) {
         pthread_mutex_lock(&dl->progress_mutex);
         dl->total_downloaded += written;
         long long total = dl->total_size;
+
+        // Calculate speed
+        time_t now = time(NULL);
+        if (dl->last_speed_time != 0) {
+            double elapsed = difftime(now, dl->last_speed_time);
+            if (elapsed >= 0.5) {
+                long long delta = dl->total_downloaded - dl->last_speed_bytes;
+                dl->current_speed = delta / elapsed;
+                dl->last_speed_bytes = dl->total_downloaded;
+                dl->last_speed_time = now;
+            }
+        } else {
+            dl->last_speed_bytes = dl->total_downloaded;
+            dl->last_speed_time = now;
+        }
         pthread_mutex_unlock(&dl->progress_mutex);
 
         if (dl->progress_cb && total > 0) {
-            dl->progress_cb(dl->total_downloaded, total, dl->progress_userdata);
+            int eta = 0;
+            if (dl->current_speed > 0) {
+                eta = (int)((total - dl->total_downloaded) / dl->current_speed);
+            }
+            dl->progress_cb(dl->total_downloaded, total, dl->current_speed, eta, dl->progress_userdata);
         }
 
-        // Save thread progress
         save_thread_progress(td);
         save_total_progress(td->filename, dl->total_downloaded);
 
@@ -402,6 +450,11 @@ modx_handle modx_create(int thread_count) {
     dl->total_downloaded = 0;
     dl->should_stop = 0;
     dl->error_flag = 0;
+    strcpy(dl->user_agent, "MoDx/1.4");
+    dl->server_ip[0] = '\0';
+    dl->last_speed_time = 0;
+    dl->last_speed_bytes = 0;
+    dl->current_speed = 0;
     dl->progress_cb = NULL;
     dl->progress_userdata = NULL;
 
@@ -428,6 +481,13 @@ void modx_set_progress_callback(modx_handle handle, modx_progress_callback cb, v
     dl->progress_userdata = userdata;
 }
 
+void modx_set_user_agent(modx_handle handle, const char *ua) {
+    ModxDownloader *dl = (ModxDownloader *)handle;
+    if (!dl || !ua) return;
+    strncpy(dl->user_agent, ua, sizeof(dl->user_agent) - 1);
+    dl->user_agent[sizeof(dl->user_agent) - 1] = '\0';
+}
+
 long long modx_get_downloaded(modx_handle handle) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     return dl ? dl->total_downloaded : 0;
@@ -441,6 +501,13 @@ long long modx_get_total_size(modx_handle handle) {
 int modx_download(modx_handle handle, const char *url, const char *filename) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl || !url || !filename) return -1;
+
+    // Get and display server IP
+    const char *ip = modx_get_server_ip(url);
+    if (ip) {
+        strcpy(dl->server_ip, ip);
+        printf("[Server IP] %s\n", ip);
+    }
 
     // Check for existing progress
     long long existing = load_total_progress(filename);
@@ -489,7 +556,6 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         td->error = 0;
         td->downloader = dl;
 
-        // Load thread progress if resuming
         long long start, end;
         long long thread_done = load_thread_progress(filename, i, &start, &end);
         if (thread_done > 0) {
@@ -497,12 +563,14 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
             td->end_byte = end;
             td->downloaded = thread_done;
             dl->total_downloaded += thread_done;
-            printf("[Resume] Thread %d: %lld/%lld bytes\n", i, thread_done, end - start + 1);
         }
     }
 
     dl->should_stop = 0;
     dl->error_flag = 0;
+    dl->last_speed_time = 0;
+    dl->last_speed_bytes = 0;
+    dl->current_speed = 0;
 
     // Start threads
     for (int i = 0; i < dl->thread_count; i++) {
@@ -514,18 +582,15 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         pthread_join(dl->threads[i].thread, NULL);
     }
 
-    // Check result
     if (dl->error_flag || dl->total_downloaded < dl->total_size) {
         save_total_progress(filename, dl->total_downloaded);
         return -1;
     }
 
-    // Merge thread files
     if (!merge_thread_files(filename, dl->thread_count)) {
         return -1;
     }
 
-    // Cleanup
     remove_total_progress(filename);
     remove_all_progress(filename, dl->thread_count);
     return 0;

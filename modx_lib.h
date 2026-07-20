@@ -12,8 +12,9 @@
 // Opaque handle
 typedef struct ModxDownloader *modx_handle;
 
-// Progress callback: downloaded, total, userdata
-typedef void (*modx_progress_callback)(long long downloaded, long long total, void *userdata);
+// Progress callback: downloaded, total, speed, eta, userdata
+typedef void (*modx_progress_callback)(long long downloaded, long long total, 
+                                        double speed, int eta, void *userdata);
 
 // Create downloader instance
 modx_handle modx_create(int thread_count);
@@ -24,8 +25,14 @@ void modx_destroy(modx_handle handle);
 // Set progress callback
 void modx_set_progress_callback(modx_handle handle, modx_progress_callback cb, void *userdata);
 
+// Set User-Agent
+void modx_set_user_agent(modx_handle handle, const char *ua);
+
 // Get file size from URL
 long long modx_get_file_size(const char *url);
+
+// Get server IP from URL
+const char* modx_get_server_ip(const char *url);
 
 // Download file (with resume support)
 int modx_download(modx_handle handle, const char *url, const char *filename);

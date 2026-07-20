@@ -7,11 +7,12 @@
 #include <unistd.h>
 #include "modx_lib.h"
 
-#define VERSION "1.2.0"
+#define VERSION "1.4.0"
 
 static int g_lang_is_chinese = 0;
 static int g_thread_count = MODX_THREAD_COUNT;
 static char g_output_filename[256] = {0};
+static char g_user_agent[256] = "MoDx/1.4";
 
 static void detect_language(void) {
     char *lang = getenv("LANG");
@@ -34,31 +35,54 @@ static void msg(const char *en_msg, const char *zh_msg, ...) {
     va_end(args);
 }
 
+static void format_size(long long bytes, char *buf) {
+    const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+    int idx = 0;
+    double val = (double)bytes;
+    while (val >= 1024.0 && idx < 4) {
+        val /= 1024.0;
+        idx++;
+    }
+    sprintf(buf, "%.2f %s", val, units[idx]);
+}
+
+static void format_time(int seconds, char *buf) {
+    if (seconds < 60) {
+        sprintf(buf, "%ds", seconds);
+    } else if (seconds < 3600) {
+        sprintf(buf, "%dm%ds", seconds / 60, seconds % 60);
+    } else {
+        sprintf(buf, "%dh%dm%ds", seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+    }
+}
+
 static void print_help(void) {
     if (g_lang_is_chinese) {
         printf("用法: modx [选项] <URL>\n\n");
         printf("选项:\n");
         printf("  -t <线程数>    指定下载线程数 (默认 2, 最大 16)\n");
         printf("  -o <文件名>    指定输出文件名\n");
+        printf("  -u <UA>        指定 User-Agent (默认 MoDx/1.4)\n");
         printf("  -h, --help     显示此帮助信息\n");
         printf("  -v, --version  显示版本号\n\n");
         printf("示例:\n");
         printf("  modx http://example.com/file.zip\n");
         printf("  modx -t 4 http://example.com/file.zip\n");
         printf("  modx -o myfile.zip http://example.com/file.zip\n");
-        printf("  modx -t 8 -o ubuntu.iso http://releases.ubuntu.com/.../ubuntu.iso\n");
+        printf("  modx -u \"Mozilla/5.0\" http://example.com/file.zip\n");
     } else {
         printf("Usage: modx [options] <URL>\n\n");
         printf("Options:\n");
         printf("  -t <threads>    Number of download threads (default 2, max 16)\n");
         printf("  -o <filename>   Output filename\n");
+        printf("  -u <UA>         Set User-Agent (default MoDx/1.4)\n");
         printf("  -h, --help      Show this help message\n");
         printf("  -v, --version   Show version information\n\n");
         printf("Examples:\n");
         printf("  modx http://example.com/file.zip\n");
         printf("  modx -t 4 http://example.com/file.zip\n");
         printf("  modx -o myfile.zip http://example.com/file.zip\n");
-        printf("  modx -t 8 -o ubuntu.iso http://releases.ubuntu.com/.../ubuntu.iso\n");
+        printf("  modx -u \"Mozilla/5.0\" http://example.com/file.zip\n");
     }
 }
 
@@ -67,13 +91,21 @@ static void print_version(void) {
     printf("Supported architectures: Linux x86_64, Linux ARM64\n");
 }
 
-static void progress_callback(long long downloaded, long long total, void *userdata) {
-    if (total > 0) {
-        int percent = (int)((double)downloaded / total * 100);
-        if (percent > 100) percent = 100;
-        printf("\r[%03d%%]", percent);
-        fflush(stdout);
-    }
+static void progress_callback(long long downloaded, long long total, double speed, int eta, void *userdata) {
+    if (total <= 0) return;
+
+    int percent = (int)((double)downloaded / total * 100);
+    if (percent > 100) percent = 100;
+
+    char speed_str[32], eta_str[32], total_str[32], done_str[32];
+    format_size((long long)speed, speed_str);
+    format_time(eta, eta_str);
+    format_size(total, total_str);
+    format_size(downloaded, done_str);
+
+    printf("\r[%03d%%] %s / %s  %s/s  ETA: %s  ",
+           percent, done_str, total_str, speed_str, eta);
+    fflush(stdout);
 }
 
 int main(int argc, char *argv[]) {
@@ -113,6 +145,14 @@ int main(int argc, char *argv[]) {
                 msg("Error: -o requires a filename\n", "错误: -o 需要指定文件名\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "-u") == 0) {
+            if (i + 1 < argc) {
+                strncpy(g_user_agent, argv[++i], sizeof(g_user_agent) - 1);
+                g_user_agent[sizeof(g_user_agent) - 1] = '\0';
+            } else {
+                msg("Error: -u requires a string\n", "错误: -u 需要指定字符串\n");
+                return 1;
+            }
         } else {
             strncpy(url, argv[i], sizeof(url) - 1);
             url[sizeof(url) - 1] = '\0';
@@ -147,6 +187,7 @@ int main(int argc, char *argv[]) {
     msg("URL: %s\n", "URL: %s\n", url);
     msg("File: %s\n", "文件: %s\n", filename);
     msg("Threads: %d\n", "线程数: %d\n", g_thread_count);
+    msg("User-Agent: %s\n", "User-Agent: %s\n", g_user_agent);
 
     downloader = modx_create(g_thread_count);
     if (!downloader) {
@@ -154,6 +195,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    modx_set_user_agent(downloader, g_user_agent);
     modx_set_progress_callback(downloader, progress_callback, NULL);
 
     if (modx_download(downloader, url, filename) == 0) {

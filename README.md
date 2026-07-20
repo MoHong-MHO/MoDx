@@ -27,8 +27,10 @@ MoDx is a lightweight, multi-threaded HTTP downloader written in C. It focuses o
 - Multi-threaded download (configurable threads, default 2, max 16)
 - Multi-thread resume support (each thread tracks its own progress)
 - HTTP Range request support
-- Real-time progress display (percentage)
-- Command line options (`-t`, `-o`, `-h`, `-v`)
+- Real-time progress display (percentage, speed, ETA)
+- Display remote server IP address
+- Custom User-Agent support (`-u`)
+- Command line options (`-t`, `-o`, `-u`, `-h`, `-v`)
 - Bilingual interface (English / Chinese, auto-detected by LANG)
 - Zero extra dependencies beyond standard C library and POSIX sockets
 - Lightweight: ~5KB executable, ~6KB shared library
@@ -77,6 +79,7 @@ Options:
 Option Description
 -t <threads> Number of download threads (default: 2, max: 16)
 -o <filename> Output filename
+-u <UA> Custom User-Agent string (default: MoDx/1.4)
 -h, --help Show help message
 -v, --version Show version information
 
@@ -92,8 +95,25 @@ Examples:
 # Specify output filename
 ./modx -o myfile.zip http://example.com/file.zip
 
+# Custom User-Agent
+./modx -u "Mozilla/5.0" http://example.com/file.zip
+
 # Combine options
-./modx -t 8 -o ubuntu.iso http://releases.ubuntu.com/.../ubuntu.iso
+./modx -t 8 -o ubuntu.iso -u "Mozilla/5.0" http://releases.ubuntu.com/.../ubuntu.iso
+```
+
+---
+
+Output Example
+
+```
+[Server IP] 93.184.216.34
+Starting download...
+URL: http://example.com/file.zip
+File: file.zip
+Threads: 4
+User-Agent: MoDx/1.4
+[042%] 4.20 MB / 10.00 MB  1.23 MB/s  ETA: 4m42s
 ```
 
 ---
@@ -151,8 +171,10 @@ MoDx 是一个轻量级的多线程 HTTP 下载器，使用 C 语言编写。它
 · 多线程下载（可配置线程数，默认 2，最大 16）
 · 多线程断点续传（每个线程独立记录进度）
 · HTTP Range 请求支持
-· 实时进度显示（百分比）
-· 命令行选项（-t、-o、-h、-v）
+· 实时进度显示（百分比、速度、剩余时间）
+· 显示远程服务器 IP 地址
+· 自定义 User-Agent（-u）
+· 命令行选项（-t、-o、-u、-h、-v）
 · 双语界面（英文 / 中文，通过 LANG 环境变量自动检测）
 · 除标准 C 库和 POSIX socket 外无额外依赖
 · 轻量级：可执行文件约 5KB，动态库约 6KB
@@ -200,6 +222,7 @@ aarch64-linux-gnu-gcc -o modx main.c modx_lib.c -lpthread -lm -Wall -Wextra
 选项 说明
 -t <线程数> 下载线程数（默认：2，最大：16）
 -o <文件名> 输出文件名
+-u <UA> 自定义 User-Agent（默认：MoDx/1.4）
 -h, --help 显示帮助信息
 -v, --version 显示版本信息
 
@@ -215,8 +238,25 @@ aarch64-linux-gnu-gcc -o modx main.c modx_lib.c -lpthread -lm -Wall -Wextra
 # 指定输出文件名
 ./modx -o myfile.zip http://example.com/file.zip
 
+# 自定义 User-Agent
+./modx -u "Mozilla/5.0" http://example.com/file.zip
+
 # 组合使用
-./modx -t 8 -o ubuntu.iso http://releases.ubuntu.com/.../ubuntu.iso
+./modx -t 8 -o ubuntu.iso -u "Mozilla/5.0" http://releases.ubuntu.com/.../ubuntu.iso
+```
+
+---
+
+输出示例
+
+```
+[Server IP] 93.184.216.34
+开始下载...
+URL: http://example.com/file.zip
+文件: file.zip
+线程数: 4
+User-Agent: MoDx/1.4
+[042%] 4.20 MB / 10.00 MB  1.23 MB/s  剩余: 4分42秒
 ```
 
 ---
