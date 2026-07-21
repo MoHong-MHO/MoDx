@@ -50,7 +50,7 @@ jobs:
           echo "MBEDTLS_STATIC=/tmp/mbedtls-2.28.8/build/library" >> $GITHUB_ENV
           echo "MBEDTLS_INCLUDE=/tmp/mbedtls-2.28.8/include" >> $GITHUB_ENV
 
-      - name: Build libmodx.so (static-link mbedTLS inside)
+      - name: Build libmodx.so (mbedTLS static-linked inside)
         run: |
           if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
             ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so modx_lib.c \

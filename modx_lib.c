@@ -15,7 +15,6 @@
 #include <errno.h>
 #include <time.h>
 
-/* mbedTLS headers */
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
@@ -60,7 +59,6 @@ typedef struct ModxDownloader {
     time_t last_speed_time;
     long long last_speed_bytes;
     double current_speed;
-    /* mbedTLS contexts */
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config ssl_conf;
     mbedtls_entropy_context entropy;
@@ -204,7 +202,7 @@ static int tcp_connect(const char *host, int port, char *ip_out) {
     return sock;
 }
 
-/* ---------- mbedTLS HTTPS ---------- */
+/* ---------- mbedTLS HTTPS helpers ---------- */
 static int tls_handshake(ModxDownloader *dl, const char *host, int port) {
     int ret;
     char port_str[8];
@@ -232,7 +230,6 @@ static int tls_handshake(ModxDownloader *dl, const char *host, int port) {
         return -1;
     }
 
-    /* Skip certificate verification for simplicity */
     mbedtls_ssl_conf_authmode(&dl->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&dl->ssl_conf, mbedtls_ctr_drbg_random, &dl->ctr_drbg);
 
@@ -641,6 +638,7 @@ long long modx_get_total_size(modx_handle handle) {
 }
 
 const char* modx_get_server_ip(const char *url) {
+    static char ip[64];
     char host[256] = {0}, path[512] = {0};
     int port = 80, is_https = 0;
 

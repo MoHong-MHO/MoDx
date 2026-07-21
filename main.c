@@ -91,7 +91,7 @@ static void print_help(void) {
 static void print_version(void) {
     printf("MoDx version %s\n", VERSION);
     printf("Supported architectures: Linux x86_64, Linux ARM64\n");
-    printf("HTTPS support: mbedTLS (static linked)\n");
+    printf("HTTPS support: mbedTLS (static linked into libmodx.so)\n");
 }
 
 static void progress_callback(long long downloaded, long long total, double speed, int eta, void *userdata) {
