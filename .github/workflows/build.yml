@@ -14,12 +14,10 @@ jobs:
         include:
           - platform: linux-x86_64
             cc: gcc
-            cflags: "-fPIC -Wall -Wextra -static"
             extra_pkgs: "libmbedtls-dev"
 
           - platform: linux-arm64
             cc: aarch64-linux-gnu-gcc
-            cflags: "-fPIC -Wall -Wextra -static"
             extra_pkgs: "gcc-aarch64-linux-gnu cmake"
 
     steps:
@@ -32,7 +30,7 @@ jobs:
         if: matrix.extra_pkgs != ''
         run: sudo apt-get install -y ${{ matrix.extra_pkgs }}
 
-      - name: Build mbedTLS for ARM64
+      - name: Build mbedTLS static library for ARM64
         if: matrix.platform == 'linux-arm64'
         run: |
           cd /tmp
@@ -52,26 +50,29 @@ jobs:
           echo "MBEDTLS_STATIC=/tmp/mbedtls-2.28.8/build/library" >> $GITHUB_ENV
           echo "MBEDTLS_INCLUDE=/tmp/mbedtls-2.28.8/include" >> $GITHUB_ENV
 
-      - name: Build
+      - name: Build libmodx.so (static-link mbedTLS inside)
         run: |
           if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
-            # ARM64: 编译 .so
-            ${{ matrix.cc }} ${{ matrix.cflags }} -shared -o libmodx.so modx_lib.c \
+            ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so modx_lib.c \
               -I$MBEDTLS_INCLUDE \
               -L$MBEDTLS_STATIC \
-              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto
-            # ARM64: 编译可执行文件
-            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c -L. -lmodx \
-              -I$MBEDTLS_INCLUDE \
-              -L$MBEDTLS_STATIC \
-              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-rpath,.
+              -lpthread -lm \
+              -Wl,-Bstatic -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-Bdynamic
           else
-            # x86_64: 编译 .so
-            ${{ matrix.cc }} ${{ matrix.cflags }} -shared -o libmodx.so modx_lib.c \
-              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto
-            # x86_64: 编译可执行文件
-            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c -L. -lmodx \
-              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-rpath,.
+            ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so modx_lib.c \
+              -lpthread -lm \
+              -Wl,-Bstatic -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-Bdynamic
+          fi
+
+      - name: Build modx (only depends on libmodx.so)
+        run: |
+          if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
+            ${{ matrix.cc }} -Os -s -o modx main.c -L. -lmodx \
+              -I$MBEDTLS_INCLUDE \
+              -Wl,-rpath,.
+          else
+            ${{ matrix.cc }} -Os -s -o modx main.c -L. -lmodx \
+              -Wl,-rpath,.
           fi
 
       - name: Package into ZIP

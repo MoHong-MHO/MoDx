@@ -297,7 +297,6 @@ static void tls_close(ModxDownloader *dl) {
 static long long http_get_file_size(const char *url, int *is_https) {
     char host[256] = {0}, path[512] = {0};
     int port = 80;
-    char ip[64];
     ModxDownloader tmp_dl = {0};
 
     if (parse_url(url, host, path, &port, is_https) < 0) return -1;
@@ -360,7 +359,6 @@ static int http_download_chunk(const char *url, char *buffer, long long start,
                                 int *is_https, ModxDownloader *dl) {
     char host[256] = {0}, path[512] = {0};
     int port = 80;
-    char ip[64];
 
     if (parse_url(url, host, path, &port, is_https) < 0) return -1;
 
@@ -643,7 +641,6 @@ long long modx_get_total_size(modx_handle handle) {
 }
 
 const char* modx_get_server_ip(const char *url) {
-    static char ip[64];
     char host[256] = {0}, path[512] = {0};
     int port = 80, is_https = 0;
 
