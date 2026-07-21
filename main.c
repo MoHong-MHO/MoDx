@@ -7,12 +7,12 @@
 #include <unistd.h>
 #include "modx_lib.h"
 
-#define VERSION "1.4.0"
+#define VERSION "1.5.0"
 
 static int g_lang_is_chinese = 0;
 static int g_thread_count = MODX_THREAD_COUNT;
 static char g_output_filename[256] = {0};
-static char g_user_agent[256] = "MoDx/1.4";
+static char g_user_agent[256] = "MoDx/1.5";
 
 static void detect_language(void) {
     char *lang = getenv("LANG");
@@ -62,33 +62,36 @@ static void print_help(void) {
         printf("选项:\n");
         printf("  -t <线程数>    指定下载线程数 (默认 2, 最大 16)\n");
         printf("  -o <文件名>    指定输出文件名\n");
-        printf("  -u <UA>        指定 User-Agent (默认 MoDx/1.4)\n");
+        printf("  -u <UA>        指定 User-Agent (默认 MoDx/1.5)\n");
         printf("  -h, --help     显示此帮助信息\n");
         printf("  -v, --version  显示版本号\n\n");
         printf("示例:\n");
         printf("  modx http://example.com/file.zip\n");
+        printf("  modx https://example.com/file.zip\n");
         printf("  modx -t 4 http://example.com/file.zip\n");
-        printf("  modx -o myfile.zip http://example.com/file.zip\n");
-        printf("  modx -u \"Mozilla/5.0\" http://example.com/file.zip\n");
+        printf("  modx -o myfile.zip https://example.com/file.zip\n");
+        printf("  modx -u \"Mozilla/5.0\" https://example.com/file.zip\n");
     } else {
         printf("Usage: modx [options] <URL>\n\n");
         printf("Options:\n");
         printf("  -t <threads>    Number of download threads (default 2, max 16)\n");
         printf("  -o <filename>   Output filename\n");
-        printf("  -u <UA>         Set User-Agent (default MoDx/1.4)\n");
+        printf("  -u <UA>         Set User-Agent (default MoDx/1.5)\n");
         printf("  -h, --help      Show this help message\n");
         printf("  -v, --version   Show version information\n\n");
         printf("Examples:\n");
         printf("  modx http://example.com/file.zip\n");
+        printf("  modx https://example.com/file.zip\n");
         printf("  modx -t 4 http://example.com/file.zip\n");
-        printf("  modx -o myfile.zip http://example.com/file.zip\n");
-        printf("  modx -u \"Mozilla/5.0\" http://example.com/file.zip\n");
+        printf("  modx -o myfile.zip https://example.com/file.zip\n");
+        printf("  modx -u \"Mozilla/5.0\" https://example.com/file.zip\n");
     }
 }
 
 static void print_version(void) {
     printf("MoDx version %s\n", VERSION);
     printf("Supported architectures: Linux x86_64, Linux ARM64\n");
+    printf("HTTPS support: mbedTLS (static linked)\n");
 }
 
 static void progress_callback(long long downloaded, long long total, double speed, int eta, void *userdata) {
@@ -104,7 +107,7 @@ static void progress_callback(long long downloaded, long long total, double spee
     format_size(downloaded, done_str);
 
     printf("\r[%03d%%] %s / %s  %s/s  ETA: %s  ",
-           percent, done_str, total_str, speed_str, eta);
+           percent, done_str, total_str, speed_str, eta_str);
     fflush(stdout);
 }
 

@@ -1,4 +1,4 @@
-// modx_lib.c - MoDx multi-thread downloader library
+// modx_lib.c - MoDx multi-thread downloader library with HTTPS support
 
 #include "modx_lib.h"
 #include <stdio.h>
@@ -15,13 +15,20 @@
 #include <errno.h>
 #include <time.h>
 
+/* mbedTLS headers */
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/error.h>
+
 #define HTTP_PORT 80
 #define HTTPS_PORT 443
 #define MAX_HEADER_SIZE 4096
 #define MAX_RETRIES 3
 #define PROGRESS_SUFFIX ".progress"
 
-// Thread data
 typedef struct {
     int id;
     char url[512];
@@ -32,11 +39,11 @@ typedef struct {
     long long downloaded;
     int complete;
     int error;
+    int is_https;
     pthread_t thread;
     struct ModxDownloader *downloader;
 } DownloadThread;
 
-// Main downloader structure
 typedef struct ModxDownloader {
     DownloadThread *threads;
     int thread_count;
@@ -53,10 +60,17 @@ typedef struct ModxDownloader {
     time_t last_speed_time;
     long long last_speed_bytes;
     double current_speed;
+    /* mbedTLS contexts */
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config ssl_conf;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_x509_crt cacert;
+    mbedtls_net_context server_fd;
+    int tls_initialized;
 } ModxDownloader;
 
-// ---------- Progress file helpers ----------
-
+/* ---------- Progress file helpers ---------- */
 static void save_thread_progress(DownloadThread *td) {
     char progress_path[512];
     snprintf(progress_path, sizeof(progress_path), "%s.progress.%d", td->filename, td->id);
@@ -71,7 +85,6 @@ static long long load_thread_progress(const char *filename, int id, long long *s
     snprintf(progress_path, sizeof(progress_path), "%s.progress.%d", filename, id);
     FILE *fp = fopen(progress_path, "r");
     if (!fp) return -1;
-
     long long downloaded = 0;
     if (fscanf(fp, "%lld %lld %lld", start, end, &downloaded) != 3) {
         fclose(fp);
@@ -126,11 +139,13 @@ int modx_can_resume(const char *filename) {
     return load_total_progress(filename) >= 0;
 }
 
-// ---------- HTTP helpers ----------
-
-static int parse_url(const char *url, char *host, char *path, int *port) {
+/* ---------- URL parsing ---------- */
+static int parse_url(const char *url, char *host, char *path, int *port, int *is_https) {
     const char *ptr = url;
+    *is_https = 0;
+
     if (strncmp(ptr, "https://", 8) == 0) {
+        *is_https = 1;
         ptr += 8;
         *port = HTTPS_PORT;
     } else if (strncmp(ptr, "http://", 7) == 0) {
@@ -164,7 +179,7 @@ static int parse_url(const char *url, char *host, char *path, int *port) {
     return 0;
 }
 
-static int connect_to_host(const char *host, int port, char *ip_out) {
+static int tcp_connect(const char *host, int port, char *ip_out) {
     struct hostent *he = gethostbyname(host);
     if (!he) return -1;
 
@@ -189,27 +204,144 @@ static int connect_to_host(const char *host, int port, char *ip_out) {
     return sock;
 }
 
-long long modx_get_file_size(const char *url) {
+/* ---------- mbedTLS HTTPS ---------- */
+static int tls_handshake(ModxDownloader *dl, const char *host, int port) {
+    int ret;
+    char port_str[8];
+
+    mbedtls_net_init(&dl->server_fd);
+    mbedtls_ssl_init(&dl->ssl);
+    mbedtls_ssl_config_init(&dl->ssl_conf);
+    mbedtls_x509_crt_init(&dl->cacert);
+    mbedtls_entropy_init(&dl->entropy);
+    mbedtls_ctr_drbg_init(&dl->ctr_drbg);
+
+    ret = mbedtls_ctr_drbg_seed(&dl->ctr_drbg, mbedtls_entropy_func,
+                                 &dl->entropy, NULL, 0);
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    ret = mbedtls_ssl_config_defaults(&dl->ssl_conf,
+                                       MBEDTLS_SSL_IS_CLIENT,
+                                       MBEDTLS_SSL_TRANSPORT_STREAM,
+                                       MBEDTLS_SSL_PRESET_DEFAULT);
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    /* Skip certificate verification for simplicity */
+    mbedtls_ssl_conf_authmode(&dl->ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
+    mbedtls_ssl_conf_rng(&dl->ssl_conf, mbedtls_ctr_drbg_random, &dl->ctr_drbg);
+
+    ret = mbedtls_ssl_setup(&dl->ssl, &dl->ssl_conf);
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    ret = mbedtls_ssl_set_hostname(&dl->ssl, host);
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    ret = mbedtls_net_connect(&dl->server_fd, host, port_str, MBEDTLS_NET_PROTO_TCP);
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    mbedtls_ssl_set_bio(&dl->ssl, &dl->server_fd,
+                        mbedtls_net_send, mbedtls_net_recv, NULL);
+
+    do {
+        ret = mbedtls_ssl_handshake(&dl->ssl);
+    } while (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+             ret == MBEDTLS_ERR_SSL_WANT_WRITE);
+
+    if (ret != 0) {
+        dl->tls_initialized = 0;
+        return -1;
+    }
+
+    dl->tls_initialized = 1;
+    return 0;
+}
+
+static int tls_send(ModxDownloader *dl, const char *data, int len) {
+    if (!dl->tls_initialized) return -1;
+    return mbedtls_ssl_write(&dl->ssl, (const unsigned char *)data, len);
+}
+
+static int tls_recv(ModxDownloader *dl, char *buf, int len) {
+    if (!dl->tls_initialized) return -1;
+    return mbedtls_ssl_read(&dl->ssl, (unsigned char *)buf, len);
+}
+
+static void tls_close(ModxDownloader *dl) {
+    if (!dl->tls_initialized) return;
+    mbedtls_ssl_free(&dl->ssl);
+    mbedtls_ssl_config_free(&dl->ssl_conf);
+    mbedtls_x509_crt_free(&dl->cacert);
+    mbedtls_entropy_free(&dl->entropy);
+    mbedtls_ctr_drbg_free(&dl->ctr_drbg);
+    mbedtls_net_free(&dl->server_fd);
+    dl->tls_initialized = 0;
+}
+
+/* ---------- HTTP/HTTPS request ---------- */
+static long long http_get_file_size(const char *url, int *is_https) {
     char host[256] = {0}, path[512] = {0};
     int port = 80;
+    char ip[64];
+    ModxDownloader tmp_dl = {0};
 
-    if (parse_url(url, host, path, &port) < 0) return -1;
+    if (parse_url(url, host, path, &port, is_https) < 0) return -1;
 
-    int sock = connect_to_host(host, port, NULL);
-    if (sock < 0) return -1;
+    if (*is_https) {
+        if (tls_handshake(&tmp_dl, host, port) < 0) {
+            tls_close(&tmp_dl);
+            return -1;
+        }
+    }
+
+    int sock = -1;
+    if (!*is_https) {
+        sock = tcp_connect(host, port, NULL);
+        if (sock < 0) return -1;
+    }
 
     char request[1024];
     snprintf(request, sizeof(request),
-        "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+        "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+        path, host);
 
-    if (send(sock, request, strlen(request), 0) < 0) {
-        close(sock);
+    int sent;
+    if (*is_https) {
+        sent = tls_send(&tmp_dl, request, strlen(request));
+    } else {
+        sent = send(sock, request, strlen(request), 0);
+    }
+    if (sent < 0) {
+        if (!*is_https) close(sock);
+        tls_close(&tmp_dl);
         return -1;
     }
 
     char response[MAX_HEADER_SIZE];
-    int received = recv(sock, response, sizeof(response) - 1, 0);
-    close(sock);
+    int received;
+    if (*is_https) {
+        received = tls_recv(&tmp_dl, response, sizeof(response) - 1);
+    } else {
+        received = recv(sock, response, sizeof(response) - 1, 0);
+    }
+
+    if (!*is_https) close(sock);
+    tls_close(&tmp_dl);
 
     if (received <= 0) return -1;
     response[received] = '\0';
@@ -223,28 +355,25 @@ long long modx_get_file_size(const char *url) {
     return -1;
 }
 
-const char* modx_get_server_ip(const char *url) {
-    static char ip[64];
+static int http_download_chunk(const char *url, char *buffer, long long start,
+                                long long end, const char *user_agent,
+                                int *is_https, ModxDownloader *dl) {
     char host[256] = {0}, path[512] = {0};
     int port = 80;
+    char ip[64];
 
-    if (parse_url(url, host, path, &port) < 0) return NULL;
+    if (parse_url(url, host, path, &port, is_https) < 0) return -1;
 
-    int sock = connect_to_host(host, port, ip);
-    if (sock < 0) return NULL;
-    close(sock);
-
-    return ip;
-}
-
-static int download_chunk(const char *url, char *buffer, long long start, long long end, const char *user_agent) {
-    char host[256] = {0}, path[512] = {0};
-    int port = 80;
-
-    if (parse_url(url, host, path, &port) < 0) return -1;
-
-    int sock = connect_to_host(host, port, NULL);
-    if (sock < 0) return -1;
+    int sock = -1;
+    if (*is_https) {
+        if (tls_handshake(dl, host, port) < 0) {
+            tls_close(dl);
+            return -1;
+        }
+    } else {
+        sock = tcp_connect(host, port, NULL);
+        if (sock < 0) return -1;
+    }
 
     char request[2048];
     snprintf(request, sizeof(request),
@@ -254,10 +383,17 @@ static int download_chunk(const char *url, char *buffer, long long start, long l
         "User-Agent: %s\r\n"
         "Connection: close\r\n"
         "\r\n",
-        path, host, start, end, user_agent ? user_agent : "MoDx/1.4");
+        path, host, start, end, user_agent ? user_agent : "MoDx/1.5");
 
-    if (send(sock, request, strlen(request), 0) < 0) {
-        close(sock);
+    int sent;
+    if (*is_https) {
+        sent = tls_send(dl, request, strlen(request));
+    } else {
+        sent = send(sock, request, strlen(request), 0);
+    }
+    if (sent < 0) {
+        if (!*is_https) close(sock);
+        tls_close(dl);
         return -1;
     }
 
@@ -266,7 +402,12 @@ static int download_chunk(const char *url, char *buffer, long long start, long l
     int header_end = 0;
 
     while (1) {
-        int received = recv(sock, response, sizeof(response), 0);
+        int received;
+        if (*is_https) {
+            received = tls_recv(dl, response, sizeof(response));
+        } else {
+            received = recv(sock, response, sizeof(response), 0);
+        }
         if (received <= 0) break;
 
         if (!header_end) {
@@ -284,13 +425,15 @@ static int download_chunk(const char *url, char *buffer, long long start, long l
         }
     }
 
-    close(sock);
+    if (!*is_https) close(sock);
+    tls_close(dl);
+
     return total_received;
 }
 
-// ---------- File writing ----------
-
-static int write_data(const char *filename, const char *data, int len, long long offset, pthread_mutex_t *mutex) {
+/* ---------- File writing ---------- */
+static int write_data(const char *filename, const char *data, int len,
+                       long long offset, pthread_mutex_t *mutex) {
     pthread_mutex_lock(mutex);
 
     FILE *fp = fopen(filename, "r+b");
@@ -315,8 +458,7 @@ static int write_data(const char *filename, const char *data, int len, long long
     return (int)written;
 }
 
-// ---------- Download thread ----------
-
+/* ---------- Download thread ---------- */
 static void* download_thread_func(void *arg) {
     DownloadThread *td = (DownloadThread *)arg;
     ModxDownloader *dl = td->downloader;
@@ -331,10 +473,13 @@ static void* download_thread_func(void *arg) {
     long long remaining = td->end_byte - td->start_byte + 1;
     long long offset = td->start_byte + td->downloaded;
     int retries = 0;
+    int is_https = 0;
 
     while (remaining > 0 && !dl->should_stop) {
         long long chunk_size = (remaining > MODX_BUFFER_SIZE) ? MODX_BUFFER_SIZE : remaining;
-        int downloaded = download_chunk(td->url, buffer, offset, offset + chunk_size - 1, dl->user_agent);
+        int downloaded = http_download_chunk(td->url, buffer, offset,
+                                              offset + chunk_size - 1,
+                                              dl->user_agent, &is_https, dl);
 
         if (downloaded <= 0) {
             retries++;
@@ -363,7 +508,6 @@ static void* download_thread_func(void *arg) {
         dl->total_downloaded += written;
         long long total = dl->total_size;
 
-        // Calculate speed
         time_t now = time(NULL);
         if (dl->last_speed_time != 0) {
             double elapsed = difftime(now, dl->last_speed_time);
@@ -400,8 +544,7 @@ static void* download_thread_func(void *arg) {
     return NULL;
 }
 
-// ---------- Merge temp files ----------
-
+/* ---------- Merge temp files ---------- */
 static int merge_thread_files(const char *filename, int thread_count) {
     FILE *final_fp = fopen(filename, "wb");
     if (!final_fp) return 0;
@@ -431,8 +574,7 @@ static int merge_thread_files(const char *filename, int thread_count) {
     return 1;
 }
 
-// ---------- Public API ----------
-
+/* ---------- Public API ---------- */
 modx_handle modx_create(int thread_count) {
     if (thread_count < 1) thread_count = 1;
 
@@ -450,13 +592,14 @@ modx_handle modx_create(int thread_count) {
     dl->total_downloaded = 0;
     dl->should_stop = 0;
     dl->error_flag = 0;
-    strcpy(dl->user_agent, "MoDx/1.4");
+    strcpy(dl->user_agent, "MoDx/1.5");
     dl->server_ip[0] = '\0';
     dl->last_speed_time = 0;
     dl->last_speed_bytes = 0;
     dl->current_speed = 0;
     dl->progress_cb = NULL;
     dl->progress_userdata = NULL;
+    dl->tls_initialized = 0;
 
     pthread_mutex_init(&dl->file_mutex, NULL);
     pthread_mutex_init(&dl->progress_mutex, NULL);
@@ -468,6 +611,7 @@ void modx_destroy(modx_handle handle) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl) return;
 
+    tls_close(dl);
     pthread_mutex_destroy(&dl->file_mutex);
     pthread_mutex_destroy(&dl->progress_mutex);
     free(dl->threads);
@@ -498,26 +642,43 @@ long long modx_get_total_size(modx_handle handle) {
     return dl ? dl->total_size : 0;
 }
 
+const char* modx_get_server_ip(const char *url) {
+    static char ip[64];
+    char host[256] = {0}, path[512] = {0};
+    int port = 80, is_https = 0;
+
+    if (parse_url(url, host, path, &port, &is_https) < 0) return NULL;
+
+    int sock = tcp_connect(host, port, ip);
+    if (sock < 0) return NULL;
+    close(sock);
+
+    return ip;
+}
+
+long long modx_get_file_size(const char *url) {
+    int is_https = 0;
+    return http_get_file_size(url, &is_https);
+}
+
 int modx_download(modx_handle handle, const char *url, const char *filename) {
     ModxDownloader *dl = (ModxDownloader *)handle;
     if (!dl || !url || !filename) return -1;
 
-    // Get and display server IP
     const char *ip = modx_get_server_ip(url);
     if (ip) {
         strcpy(dl->server_ip, ip);
         printf("[Server IP] %s\n", ip);
     }
 
-    // Check for existing progress
     long long existing = load_total_progress(filename);
     if (existing > 0) {
         printf("[Resume] Continuing from %lld bytes\n", existing);
         dl->total_downloaded = existing;
     }
 
-    // Get file size
-    dl->total_size = modx_get_file_size(url);
+    int is_https = 0;
+    dl->total_size = http_get_file_size(url, &is_https);
     if (dl->total_size <= 0) {
         return -1;
     }
@@ -528,7 +689,6 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         return 0;
     }
 
-    // Pre-allocate file
     FILE *fp = fopen(filename, "rb+");
     if (!fp) {
         fp = fopen(filename, "wb");
@@ -538,7 +698,6 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
     }
     fclose(fp);
 
-    // Initialize threads
     long long seg = dl->total_size / dl->thread_count;
     for (int i = 0; i < dl->thread_count; i++) {
         DownloadThread *td = &dl->threads[i];
@@ -555,6 +714,7 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
         td->complete = 0;
         td->error = 0;
         td->downloader = dl;
+        td->is_https = is_https;
 
         long long start, end;
         long long thread_done = load_thread_progress(filename, i, &start, &end);
@@ -572,12 +732,10 @@ int modx_download(modx_handle handle, const char *url, const char *filename) {
     dl->last_speed_bytes = 0;
     dl->current_speed = 0;
 
-    // Start threads
     for (int i = 0; i < dl->thread_count; i++) {
         pthread_create(&dl->threads[i].thread, NULL, download_thread_func, &dl->threads[i]);
     }
 
-    // Wait for threads
     for (int i = 0; i < dl->thread_count; i++) {
         pthread_join(dl->threads[i].thread, NULL);
     }
