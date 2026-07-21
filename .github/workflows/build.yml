@@ -55,18 +55,28 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
-            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c modx_lib.c \
+            # ARM64: 编译 .so
+            ${{ matrix.cc }} ${{ matrix.cflags }} -shared -o libmodx.so modx_lib.c \
               -I$MBEDTLS_INCLUDE \
               -L$MBEDTLS_STATIC \
               -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto
+            # ARM64: 编译可执行文件
+            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c -L. -lmodx \
+              -I$MBEDTLS_INCLUDE \
+              -L$MBEDTLS_STATIC \
+              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-rpath,.
           else
-            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c modx_lib.c \
+            # x86_64: 编译 .so
+            ${{ matrix.cc }} ${{ matrix.cflags }} -shared -o libmodx.so modx_lib.c \
               -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto
+            # x86_64: 编译可执行文件
+            ${{ matrix.cc }} ${{ matrix.cflags }} -o modx main.c -L. -lmodx \
+              -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-rpath,.
           fi
 
       - name: Package into ZIP
         run: |
-          zip MoDx-${{ matrix.platform }}.zip modx
+          zip MoDx-${{ matrix.platform }}.zip libmodx.so modx
 
       - name: Upload ZIP as artifact
         uses: actions/upload-artifact@v4
