@@ -25,7 +25,7 @@
 #define HTTP_PORT 80
 #define HTTPS_PORT 443
 #define MAX_HEADER_SIZE 4096
-#define MAX_RETRIES 3
+#define DEFAULT_MAX_RETRIES 3
 #define PROGRESS_SUFFIX ".progress"
 
 typedef struct {
@@ -52,6 +52,8 @@ typedef struct ModxDownloader {
     volatile int error_flag;
     char user_agent[256];
     char server_ip[64];
+    int max_retries;
+    long long rate_limit;          // bytes per second, 0 = no limit
     pthread_mutex_t file_mutex;
     pthread_mutex_t progress_mutex;
     modx_progress_callback progress_cb;
@@ -378,7 +380,7 @@ static int http_download_chunk(const char *url, char *buffer, long long start,
         "User-Agent: %s\r\n"
         "Connection: close\r\n"
         "\r\n",
-        path, host, start, end, user_agent ? user_agent : "MoDx/1.5");
+        path, host, start, end, user_agent ? user_agent : "MoDx/1.6");
 
     int sent;
     if (*is_https) {
@@ -453,6 +455,41 @@ static int write_data(const char *filename, const char *data, int len,
     return (int)written;
 }
 
+/* ---------- Rate limiting helper ---------- */
+static void rate_limit_sleep(ModxDownloader *dl, long long bytes_written) {
+    if (dl->rate_limit <= 0) return;
+
+    static long long bucket = 0;
+    static struct timespec last_time = {0, 0};
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (last_time.tv_sec == 0 && last_time.tv_nsec == 0) {
+        last_time = now;
+        bucket = 0;
+        return;
+    }
+
+    long long elapsed_ns = (now.tv_sec - last_time.tv_sec) * 1000000000LL +
+                           (now.tv_nsec - last_time.tv_nsec);
+    if (elapsed_ns > 0) {
+        long long tokens = (elapsed_ns * dl->rate_limit) / 1000000000LL;
+        bucket += tokens;
+        if (bucket > dl->rate_limit * 2) bucket = dl->rate_limit * 2;
+        last_time = now;
+    }
+
+    bucket -= bytes_written;
+    if (bucket < 0) {
+        long long deficit_ns = (-bucket * 1000000000LL) / dl->rate_limit;
+        struct timespec req = {0, deficit_ns};
+        nanosleep(&req, NULL);
+        bucket = 0;
+        clock_gettime(CLOCK_MONOTONIC, &last_time);
+    }
+}
+
 /* ---------- Download thread ---------- */
 static void* download_thread_func(void *arg) {
     DownloadThread *td = (DownloadThread *)arg;
@@ -478,7 +515,7 @@ static void* download_thread_func(void *arg) {
 
         if (downloaded <= 0) {
             retries++;
-            if (retries >= MAX_RETRIES) {
+            if (retries >= dl->max_retries) {
                 td->error = 1;
                 dl->error_flag = 1;
                 dl->should_stop = 1;
@@ -487,6 +524,9 @@ static void* download_thread_func(void *arg) {
             sleep(1);
             continue;
         }
+
+        // Rate limit
+        rate_limit_sleep(dl, downloaded);
 
         int written = write_data(td->filename, buffer, downloaded, offset, &dl->file_mutex);
 
@@ -587,8 +627,10 @@ modx_handle modx_create(int thread_count) {
     dl->total_downloaded = 0;
     dl->should_stop = 0;
     dl->error_flag = 0;
-    strcpy(dl->user_agent, "MoDx/1.5");
+    strcpy(dl->user_agent, "MoDx/1.6");
     dl->server_ip[0] = '\0';
+    dl->max_retries = DEFAULT_MAX_RETRIES;
+    dl->rate_limit = 0;
     dl->last_speed_time = 0;
     dl->last_speed_bytes = 0;
     dl->current_speed = 0;
@@ -625,6 +667,20 @@ void modx_set_user_agent(modx_handle handle, const char *ua) {
     if (!dl || !ua) return;
     strncpy(dl->user_agent, ua, sizeof(dl->user_agent) - 1);
     dl->user_agent[sizeof(dl->user_agent) - 1] = '\0';
+}
+
+void modx_set_max_retries(modx_handle handle, int retries) {
+    ModxDownloader *dl = (ModxDownloader *)handle;
+    if (!dl) return;
+    if (retries < 0) retries = 0;
+    dl->max_retries = retries;
+}
+
+void modx_set_rate_limit(modx_handle handle, long long bytes_per_second) {
+    ModxDownloader *dl = (ModxDownloader *)handle;
+    if (!dl) return;
+    if (bytes_per_second < 0) bytes_per_second = 0;
+    dl->rate_limit = bytes_per_second;
 }
 
 long long modx_get_downloaded(modx_handle handle) {

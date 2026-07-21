@@ -15,8 +15,11 @@ typedef void (*modx_progress_callback)(long long downloaded, long long total,
 
 modx_handle modx_create(int thread_count);
 void modx_destroy(modx_handle handle);
+
 void modx_set_progress_callback(modx_handle handle, modx_progress_callback cb, void *userdata);
 void modx_set_user_agent(modx_handle handle, const char *ua);
+void modx_set_max_retries(modx_handle handle, int retries);
+void modx_set_rate_limit(modx_handle handle, long long bytes_per_second);
 
 long long modx_get_file_size(const char *url);
 const char* modx_get_server_ip(const char *url);

@@ -2,7 +2,7 @@ MoDx
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/MoHong-MHO/MoDx/build.yml?branch=main)](https://github.com/MoHong-MHO/MoDx/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.5-blue)](https://github.com/MoHong-MHO/MoDx/releases)
+[![Version](https://img.shields.io/badge/version-v1.6-blue)](https://github.com/MoHong-MHO/MoDx/releases)
 
 > A lightweight, multi-threaded command-line downloader built in C.  
 > Supports Linux x86_64 and ARM64 with minimal dependencies.
@@ -47,7 +47,10 @@ MoDx is a lightweight, multi-threaded HTTP/HTTPS downloader written in C. It foc
 - Real-time progress display (percentage, speed, ETA)
 - Display remote server IP address
 - Custom User-Agent (-u)
-- Command line options (-t, -o, -u, -h, -v)
+- Rate limiting (-r)
+- Quiet mode (-q)
+- Batch download from URL list file (-i)
+- Command line options (-t, -o, -d, -u, -R, -r, -q, -i, -h, -v)
 - Bilingual interface (English / Chinese, auto-detected by LANG)
 - Zero runtime dependencies (everything is linked into libmodx.so)
 - Lightweight: ~5KB executable, ~100KB shared library (with TLS)
@@ -70,6 +73,7 @@ You also need to build libmodx.so first. The CI script shows how to link mbedTLS
 ## Usage
 
 ./modx [options] <URL>
+./modx [options] -i <batch-file>
 
 ## Options
 
@@ -77,7 +81,12 @@ You also need to build libmodx.so first. The CI script shows how to link mbedTLS
 |--------|-------------|
 | -t <threads> | Number of download threads (default: 2, max: 16) |
 | -o <filename> | Output filename |
-| -u <UA> | Custom User-Agent string (default: MoDx/1.5) |
+| -d <directory> | Output directory (default: current directory) |
+| -u <UA> | Custom User-Agent string (default: MoDx/1.6) |
+| -R <retries> | Max retries on failure (default: 3) |
+| -r <rate> | Rate limit, e.g. 1M (units: B/K/M/G) |
+| -q | Quiet mode, no progress output |
+| -i <file> | Batch download from URL list file |
 | -h, --help | Show help message |
 | -v, --version | Show version information |
 
@@ -89,17 +98,17 @@ Basic HTTP download
 HTTPS download
 ./modx https://example.com/file.zip
 
-Use 4 threads
-./modx -t 4 https://example.com/file.zip
+Use 4 threads and specify output name
+./modx -t 4 -o myfile.zip https://example.com/file.zip
 
-Specify output filename
-./modx -o myfile.zip https://example.com/file.zip
+Specify output directory and rate limit
+./modx -d ./downloads -r 1M https://example.com/file.zip
 
-Custom User-Agent
-./modx -u "Mozilla/5.0" https://example.com/file.zip
+Quiet mode
+./modx -q https://example.com/file.zip
 
-Combine options
-./modx -t 8 -o ubuntu.iso -u "Mozilla/5.0" https://releases.ubuntu.com/.../ubuntu.iso
+Batch download from URL list
+./modx -i urls.txt -d ./downloads -t 2
 
 ## Resume Support
 
@@ -150,7 +159,10 @@ MoDx 是一个轻量级的多线程 HTTP/HTTPS 下载器，使用 C 语言编写
 - 实时进度显示（百分比、速度、剩余时间）
 - 显示远程服务器 IP 地址
 - 自定义 User-Agent（-u）
-- 命令行选项（-t、-o、-u、-h、-v）
+- 限速下载（-r）
+- 静默模式（-q）
+- 批量下载（-i）
+- 命令行选项（-t、-o、-d、-u、-R、-r、-q、-i、-h、-v）
 - 双语界面（英文 / 中文，通过 LANG 环境变量自动检测）
 - 零运行时依赖（所有 TLS 代码已静态链接）
 - 轻量级：可执行文件约 5KB，动态库约 100KB（含 TLS）
@@ -173,6 +185,7 @@ gcc -o modx main.c -L. -lmodx -Wl,-rpath,.
 ## 使用方法
 
 ./modx [选项] <URL>
+./modx [选项] -i <批量文件>
 
 ## 选项
 
@@ -180,7 +193,12 @@ gcc -o modx main.c -L. -lmodx -Wl,-rpath,.
 |------|------|
 | -t <线程数> | 下载线程数（默认：2，最大：16） |
 | -o <文件名> | 输出文件名 |
-| -u <UA> | 自定义 User-Agent（默认：MoDx/1.5） |
+| -d <目录> | 输出目录（默认：当前目录） |
+| -u <UA> | 自定义 User-Agent（默认：MoDx/1.6） |
+| -R <次数> | 失败重试次数（默认：3） |
+| -r <速率> | 限速，如 1M（单位：B/K/M/G） |
+| -q | 静默模式，不输出进度信息 |
+| -i <文件> | 从文件读取 URL 列表批量下载 |
 | -h, --help | 显示帮助信息 |
 | -v, --version | 显示版本信息 |
 
@@ -192,17 +210,17 @@ gcc -o modx main.c -L. -lmodx -Wl,-rpath,.
 HTTPS 下载
 ./modx https://example.com/file.zip
 
-使用 4 线程
-./modx -t 4 https://example.com/file.zip
+使用 4 线程并指定输出名
+./modx -t 4 -o myfile.zip https://example.com/file.zip
 
-指定输出文件名
-./modx -o myfile.zip https://example.com/file.zip
+指定输出目录和限速
+./modx -d ./downloads -r 1M https://example.com/file.zip
 
-自定义 User-Agent
-./modx -u "Mozilla/5.0" https://example.com/file.zip
+静默模式
+./modx -q https://example.com/file.zip
 
-组合使用
-./modx -t 8 -o ubuntu.iso -u "Mozilla/5.0" https://releases.ubuntu.com/.../ubuntu.iso
+从 URL 列表批量下载
+./modx -i urls.txt -d ./downloads -t 2
 
 ## 断点续传
 
