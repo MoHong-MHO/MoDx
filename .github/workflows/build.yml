@@ -14,25 +14,24 @@ jobs:
         include:
           - platform: linux-x86_64
             cc: gcc
-            target: x86_64-linux-gnu
-            cmake_extra: ""
+            extra_pkgs: "libmbedtls-dev"
 
           - platform: linux-arm64
             cc: aarch64-linux-gnu-gcc
-            target: aarch64-linux-gnu
-            cmake_extra: "-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64"
+            extra_pkgs: "gcc-aarch64-linux-gnu cmake"
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install base tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+        run: sudo apt-get update && sudo apt-get install -y build-essential
 
-      - name: Install extra packages (ARM64 cross-compile)
+      - name: Install extra packages
+        if: matrix.extra_pkgs != ''
+        run: sudo apt-get install -y ${{ matrix.extra_pkgs }}
+
+      - name: Build mbedTLS static library for ARM64
         if: matrix.platform == 'linux-arm64'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build mbedTLS static library with -fPIC
         run: |
           cd /tmp
           wget -q https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v2.28.8.tar.gz
@@ -40,8 +39,9 @@ jobs:
           cd mbedtls-2.28.8
           mkdir build && cd build
           cmake .. \
-            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-            ${{ matrix.cmake_extra }} \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_BUILD_TYPE=Release \
             -DENABLE_PROGRAMS=OFF \
             -DENABLE_TESTING=OFF \
@@ -53,16 +53,30 @@ jobs:
 
       - name: Build libmodx.so (mbedTLS static-linked inside)
         run: |
-          ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so modx_lib.c \
-            -I$MBEDTLS_INCLUDE \
-            -L$MBEDTLS_STATIC \
-            -lpthread -lm \
-            -Wl,-Bstatic -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-Bdynamic
+          SOURCES="lib/core/*.c lib/download/*.c lib/net/*.c lib/checksum/*.c"
+          if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
+            ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so $SOURCES \
+              -I$MBEDTLS_INCLUDE \
+              -L$MBEDTLS_STATIC \
+              -lpthread -lm \
+              -Wl,-Bstatic -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-Bdynamic
+          else
+            ${{ matrix.cc }} -fPIC -shared -Os -s -o libmodx.so $SOURCES \
+              -lpthread -lm \
+              -Wl,-Bstatic -lmbedtls -lmbedx509 -lmbedcrypto -Wl,-Bdynamic
+          fi
 
       - name: Build modx (only depends on libmodx.so)
         run: |
-          ${{ matrix.cc }} -Os -s -o modx main.c -L. -lmodx \
-            -Wl,-rpath,.
+          SOURCES="main.c main/cli/*.c main/ui/*.c main/batch/*.c"
+          if [ "${{ matrix.platform }}" = "linux-arm64" ]; then
+            ${{ matrix.cc }} -Os -s -o modx $SOURCES -L. -lmodx \
+              -I$MBEDTLS_INCLUDE \
+              -Wl,-rpath,.
+          else
+            ${{ matrix.cc }} -Os -s -o modx $SOURCES -L. -lmodx \
+              -Wl,-rpath,.
+          fi
 
       - name: Package into ZIP
         run: |
