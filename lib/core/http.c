@@ -10,7 +10,6 @@
 #define MAX_HEADER_SIZE 4096
 #define MAX_RESPONSE_HEADERS 8192
 
-/* 存储响应头的全局变量（用于 -H 选项） */
 static char g_last_response_headers[MAX_RESPONSE_HEADERS] = {0};
 
 const char* modx_http_get_last_headers(void)
@@ -18,7 +17,6 @@ const char* modx_http_get_last_headers(void)
     return g_last_response_headers;
 }
 
-/* 发送 HTTP 请求（通用） */
 static int http_send_request(int sock, struct modx_tls_ctx *tls,
                              const char *method, const char *host,
                              const char *path, const char *range,
@@ -35,7 +33,7 @@ static int http_send_request(int sock, struct modx_tls_ctx *tls,
         "Connection: close\r\n"
         "\r\n",
         method, path, host,
-        user_agent ? user_agent : "MoDx/1.6",
+        user_agent ? user_agent : "MoDx/1.7",
         range ? range : "");
 
     if (tls) {
@@ -45,24 +43,24 @@ static int http_send_request(int sock, struct modx_tls_ctx *tls,
     }
 }
 
-/* 读取响应头并保存到全局变量 */
+/* 修复：将变量名从 recv 改为 n */
 static int http_read_headers(int sock, struct modx_tls_ctx *tls, char **out_body, int *body_len)
 {
     char buf[4096];
     int total = 0;
+    int n;
     char *header_end;
 
     g_last_response_headers[0] = '\0';
 
     while (1) {
-        int recv;
         if (tls) {
-            recv = modx_tls_recv(tls, buf + total, sizeof(buf) - total - 1);
+            n = modx_tls_recv(tls, buf + total, sizeof(buf) - total - 1);
         } else {
-            recv = recv(sock, buf + total, sizeof(buf) - total - 1, 0);
+            n = recv(sock, buf + total, sizeof(buf) - total - 1, 0);
         }
-        if (recv <= 0) return -1;
-        total += recv;
+        if (n <= 0) return -1;
+        total += n;
         buf[total] = '\0';
 
         header_end = strstr(buf, "\r\n\r\n");
@@ -93,7 +91,6 @@ static int http_read_headers(int sock, struct modx_tls_ctx *tls, char **out_body
     }
 }
 
-/* 获取文件大小（保留原有逻辑） */
 long long modx_http_get_size(const char *url)
 {
     char host[256], path[512];
@@ -140,7 +137,6 @@ done:
     return size;
 }
 
-/* 下载一个分块，边读边写入（通过回调） */
 int modx_http_download_range(const char *url,
                              long long start, long long end,
                              const char *user_agent,
@@ -176,16 +172,14 @@ int modx_http_download_range(const char *url,
     body_len = http_read_headers(sock, tls, &body, &body_len);
     if (body_len < 0) goto done;
 
-    /* 解析状态码（如果有） */
     if (out_status_code && g_last_response_headers[0]) {
         char *http = strstr(g_last_response_headers, "HTTP/");
         if (http) {
-            http += 9; /* 跳过 "HTTP/1.1 " 或 "HTTP/1.0 " */
+            http += 9;
             *out_status_code = atoi(http);
         }
     }
 
-    /* 写入 body 部分 */
     if (body_len > 0 && body) {
         if (cb(userdata, body, body_len) < 0) {
             free(body);
@@ -196,18 +190,18 @@ int modx_http_download_range(const char *url,
         body = NULL;
     }
 
-    /* 继续读取剩余数据 */
+    /* 修复：将变量名从 recv 改为 n */
     char buf[8192];
     while (1) {
-        int recv;
+        int n;
         if (is_https) {
-            recv = modx_tls_recv(tls, buf, sizeof(buf));
+            n = modx_tls_recv(tls, buf, sizeof(buf));
         } else {
-            recv = recv(sock, buf, sizeof(buf), 0);
+            n = recv(sock, buf, sizeof(buf), 0);
         }
-        if (recv <= 0) break;
-        if (cb(userdata, buf, recv) < 0) break;
-        total += recv;
+        if (n <= 0) break;
+        if (cb(userdata, buf, n) < 0) break;
+        total += n;
     }
 
 done:

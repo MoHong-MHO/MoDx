@@ -15,7 +15,6 @@ struct modx_thread_pool {
     int active;
 };
 
-/* 下载线程参数 */
 struct download_task {
     char url[512];
     char filename[256];
@@ -34,7 +33,6 @@ struct download_task {
     void (*progress_cb)(long long, long long, double, int);
 };
 
-/* 写数据到文件的回调 */
 static int write_to_file(void *userdata, const char *data, int len)
 {
     struct download_task *task = (struct download_task *)userdata;
@@ -62,33 +60,31 @@ static int write_to_file(void *userdata, const char *data, int len)
 
     pthread_mutex_lock(task->progress_mutex);
     *task->total_downloaded += written;
-    long long total = task->total_size;
     pthread_mutex_unlock(task->progress_mutex);
 
-    /* 限速 */
     modx_rate_limit_wait(written);
 
     return 0;
 }
 
-/* 下载线程主函数 */
 static void* download_thread_func(void *arg)
 {
     struct download_task *task = (struct download_task *)arg;
     long long remaining = task->end_byte - task->start_byte + 1;
     long long offset = task->start_byte + task->downloaded;
     int retries = 0;
-    char *headers = NULL;
+    int status_code = 0;  /* 修复：用 int 变量接收状态码 */
 
     while (remaining > 0 && !(*task->should_stop)) {
         long long chunk_size = (remaining > 8192) ? 8192 : remaining;
         long long end = offset + chunk_size - 1;
 
+        /* 修复：传 &status_code (int*) 而不是 &headers (char**) */
         int downloaded = modx_http_download_range(task->url,
                                                    offset, end,
                                                    task->user_agent,
                                                    write_to_file, task,
-                                                   &headers);
+                                                   &status_code);
 
         if (downloaded <= 0) {
             retries++;
@@ -97,7 +93,7 @@ static void* download_thread_func(void *arg)
                         task->id, retries);
                 return NULL;
             }
-            sleep(1 << retries);  // 指数退避
+            sleep(1 << retries);
             continue;
         }
 
@@ -109,7 +105,6 @@ static void* download_thread_func(void *arg)
     return NULL;
 }
 
-/* 线程池 API */
 struct modx_thread_pool* modx_pool_create(int thread_count)
 {
     struct modx_thread_pool *pool = calloc(1, sizeof(struct modx_thread_pool));
@@ -160,7 +155,6 @@ int modx_pool_download(struct modx_thread_pool *pool,
         task->end_byte = (i == thread_count - 1) ?
             total_size - 1 : (long long)(i + 1) * seg - 1;
 
-        /* 检查是否有断点续传进度 */
         long long start, end;
         long long done = modx_progress_load_thread(filename, i, &start, &end);
         if (done > 0) {
@@ -186,10 +180,8 @@ int modx_pool_download(struct modx_thread_pool *pool,
         pool->running++;
     }
 
-    /* 等待所有线程完成 */
     for (int i = 0; i < pool->running; i++) {
         pthread_join(pool->threads[i], NULL);
-        /* 保存每个线程的进度 */
         struct download_task *task = &tasks[i];
         if (task->downloaded > 0) {
             modx_progress_save_thread(filename, i,
