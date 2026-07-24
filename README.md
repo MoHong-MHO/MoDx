@@ -1,4 +1,4 @@
-MoDx
+# MoDx
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/MoHong-MHO/MoDx/build.yml?branch=main)](https://github.com/MoHong-MHO/MoDx/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -9,7 +9,7 @@ MoDx
 
 ## Table of Contents
 
-- [# 1. English](#1-english)
+- [1. English](#1-english)
   - [Overview](#overview)
   - [Features](#features)
   - [Installation](#installation)
@@ -18,9 +18,10 @@ MoDx
   - [Examples](#examples)
   - [Resume Support](#resume-support)
   - [HTTPS Support](#https-support)
+  - [Checksum Verification](#checksum-verification)
   - [Project Structure](#project-structure)
   - [License](#license)
-- [# 2. 中文](#2-中文)
+- [2. 中文](#2-中文)
   - [概述](#概述)
   - [特性](#特性)
   - [安装](#安装)
@@ -29,16 +30,17 @@ MoDx
   - [示例](#示例)
   - [断点续传](#断点续传)
   - [HTTPS 支持](#https-支持)
+  - [校验和验证](#校验和验证)
   - [项目结构](#项目结构)
   - [许可证](#许可证)
 
-# 1. English
+## 1. English
 
-## Overview
+### Overview
 
 MoDx is a lightweight, multi-threaded HTTP/HTTPS downloader written in C. It focuses on simplicity, cross-platform compatibility, and low dependency overhead. Currently supports Linux x86_64 and Linux ARM64.
 
-## Features
+### Features
 
 - Multi-threaded download (configurable threads, default 2, max 16)
 - Multi-thread resume support (each thread tracks its own progress)
@@ -62,28 +64,30 @@ MoDx is a lightweight, multi-threaded HTTP/HTTPS downloader written in C. It foc
 - Bilingual interface (English / Chinese, auto-detected by LANG)
 - Zero runtime dependencies (everything is linked into libmodx.so)
 
-## Installation
+### Installation
 
-### Option 1: Download Pre-built Binary
-
+**Option 1: Download Pre-built Binary**  
 Download from [Releases](https://github.com/MoHong-MHO/MoDx/releases) page.  
 The package contains modx (executable) and libmodx.so (shared library).
 
-### Option 2: Build from Source
-
+**Option 2: Build from Source**
+```bash
 git clone https://github.com/MoHong-MHO/MoDx.git
 cd MoDx
 gcc -o modx main.c \
     lib/core/*.c lib/download/*.c lib/net/*.c lib/checksum/*.c \
     main/cli/*.c main/ui/*.c main/batch/*.c \
     -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wall -Wextra
+```
 
-## Usage
+### Usage
 
+```bash
 ./modx [options] <URL>
 ./modx [options] -i <batch-file>
+```
 
-## Options
+### Options
 
 | Option | Description |
 |--------|-------------|
@@ -105,45 +109,65 @@ gcc -o modx main.c \
 | -h, --help | Show help message |
 | -v, --version | Show version information |
 
-## Examples
+### Examples
 
-Basic HTTP download
+**Basic HTTP download**
+```bash
 ./modx http://example.com/file.zip
+```
 
-HTTPS download
+**HTTPS download**
+```bash
 ./modx https://example.com/file.zip
+```
 
-Use 4 threads and specify output name
+**Use 4 threads and specify output name**
+```bash
 ./modx -t 4 -o myfile.zip https://example.com/file.zip
+```
 
-Specify output directory and rate limit
+**Specify output directory and rate limit**
+```bash
 ./modx -d ./downloads -r 1M https://example.com/file.zip
+```
 
-Show response headers and verbose mode
+**Show response headers and verbose mode**
+```bash
 ./modx -H -V https://example.com/file.zip
+```
 
-Auto-resume without asking
+**Auto-resume without asking**
+```bash
 ./modx -y https://example.com/file.zip
+```
 
-Use proxy
+**Use proxy**
+```bash
 ./modx -x http://proxy:8080 https://example.com/file.zip
+```
 
-Mirror download with fallback URLs
+**Mirror download with fallback URLs**
+```bash
 ./modx -m https://mirror1.com/file.zip https://mirror2.com/file.zip https://example.com/file.zip
+```
 
-Batch download from URL list
+**Batch download from URL list**
+```bash
 ./modx -i urls.txt -d ./downloads -t 2
+```
 
-Quiet mode
+**Quiet mode**
+```bash
 ./modx -q https://example.com/file.zip
+```
 
-## Resume Support
+### Resume Support
 
 MoDx supports multi-thread resume. If a download is interrupted (e.g., Ctrl+C), simply run the same command again to continue from where it left off.
 
 By default, MoDx will ask for confirmation before resuming. Use -y to skip the confirmation and auto-resume.
 
-Progress files:
+**Progress files:**
 
 | File | Description |
 |------|-------------|
@@ -155,18 +179,19 @@ Progress files:
 
 All progress and temporary files are automatically removed upon successful completion.
 
-## HTTPS Support
+### HTTPS Support
 
 MoDx supports HTTPS via [mbedTLS](https://github.com/Mbed-TLS/mbedtls). The TLS library is statically linked into libmodx.so, so no extra runtime dependencies are required.
 
 By default, certificate verification is disabled for compatibility. To enable verification, use --ca-cert to specify a CA certificate file.
 
-## Checksum Verification
+### Checksum Verification
 
 MoDx automatically computes and displays MD5 and SHA256 checksums after each successful download. No additional options are required.
 
-## Project Structure
+### Project Structure
 
+```text
 MoDx/
 ├── main.c                      # Entry point
 ├── lib/
@@ -180,18 +205,19 @@ MoDx/
 │   └── batch/                  # Batch and queue management
 ├── LICENSE
 └── README.md
+```
 
-## License
+### License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-# 2. 中文
+## 2. 中文
 
-## 概述
+### 概述
 
 MoDx 是一个轻量级的多线程 HTTP/HTTPS 下载器，使用 C 语言编写。它注重简洁性、跨平台兼容性和低依赖。目前支持 Linux x86_64 和 Linux ARM64。
 
-## 特性
+### 特性
 
 - 多线程下载（可配置线程数，默认 2，最大 16）
 - 多线程断点续传（每个线程独立记录进度）
@@ -215,28 +241,30 @@ MoDx 是一个轻量级的多线程 HTTP/HTTPS 下载器，使用 C 语言编写
 - 双语界面（英文 / 中文，通过 LANG 环境变量自动检测）
 - 零运行时依赖
 
-## 安装
+### 安装
 
-### 方式一：下载预编译二进制
-
+**方式一：下载预编译二进制**  
 从 [Releases](https://github.com/MoHong-MHO/MoDx/releases) 页面下载。  
 压缩包包含 modx（可执行文件）和 libmodx.so（动态库）。
 
-### 方式二：从源码编译
-
+**方式二：从源码编译**
+```bash
 git clone https://github.com/MoHong-MHO/MoDx.git
 cd MoDx
 gcc -o modx main.c \
     lib/core/*.c lib/download/*.c lib/net/*.c lib/checksum/*.c \
     main/cli/*.c main/ui/*.c main/batch/*.c \
     -lpthread -lm -lmbedtls -lmbedx509 -lmbedcrypto -Wall -Wextra
+```
 
-## 使用方法
+### 使用方法
 
+```bash
 ./modx [选项] <URL>
 ./modx [选项] -i <批量文件>
+```
 
-## 选项
+### 选项
 
 | 选项 | 说明 |
 |------|------|
@@ -258,45 +286,65 @@ gcc -o modx main.c \
 | -h, --help | 显示帮助信息 |
 | -v, --version | 显示版本信息 |
 
-## 示例
+### 示例
 
-基本 HTTP 下载
+**基本 HTTP 下载**
+```bash
 ./modx http://example.com/file.zip
+```
 
-HTTPS 下载
+**HTTPS 下载**
+```bash
 ./modx https://example.com/file.zip
+```
 
-使用 4 线程并指定输出名
+**使用 4 线程并指定输出名**
+```bash
 ./modx -t 4 -o myfile.zip https://example.com/file.zip
+```
 
-指定输出目录和限速
+**指定输出目录和限速**
+```bash
 ./modx -d ./downloads -r 1M https://example.com/file.zip
+```
 
-显示响应头和详细模式
+**显示响应头和详细模式**
+```bash
 ./modx -H -V https://example.com/file.zip
+```
 
-自动续传不询问
+**自动续传不询问**
+```bash
 ./modx -y https://example.com/file.zip
+```
 
-使用代理
+**使用代理**
+```bash
 ./modx -x http://proxy:8080 https://example.com/file.zip
+```
 
-镜像下载
+**镜像下载**
+```bash
 ./modx -m https://mirror1.com/file.zip https://mirror2.com/file.zip https://example.com/file.zip
+```
 
-批量下载
+**批量下载**
+```bash
 ./modx -i urls.txt -d ./downloads -t 2
+```
 
-静默模式
+**静默模式**
+```bash
 ./modx -q https://example.com/file.zip
+```
 
-## 断点续传
+### 断点续传
 
 MoDx 支持多线程断点续传。如果下载被中断（例如按 Ctrl+C），只需再次运行相同命令即可从中断处继续下载。
 
 默认情况下，MoDx 会在续传前询问确认。使用 -y 可跳过确认直接续传。
 
-进度文件说明：
+**进度文件说明：**
 
 | 文件 | 说明 |
 |------|------|
@@ -308,18 +356,19 @@ MoDx 支持多线程断点续传。如果下载被中断（例如按 Ctrl+C）�
 
 下载完成后，所有进度文件和临时文件会自动删除。
 
-## HTTPS 支持
+### HTTPS 支持
 
 MoDx 通过 [mbedTLS](https://github.com/Mbed-TLS/mbedtls) 支持 HTTPS。TLS 库被静态链接到 libmodx.so 中，因此不需要额外安装运行时依赖。
 
 默认情况下，证书验证处于禁用状态以保证兼容性。如需启用验证，请使用 --ca-cert 指定 CA 证书文件。
 
-## 校验和验证
+### 校验和验证
 
 MoDx 在每次下载完成后自动计算并显示 MD5 和 SHA256 校验和，无需额外选项。
 
-## 项目结构
+### 项目结构
 
+```text
 MoDx/
 ├── main.c                      # 入口
 ├── lib/
@@ -333,7 +382,8 @@ MoDx/
 │   └── batch/                  # 批量和队列管理
 ├── LICENSE
 └── README.md
+```
 
-## 许可证
+### 许可证
 
 本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
