@@ -32,7 +32,7 @@ static void signal_handler(int sig)
 {
     (void)sig;
     g_should_stop = 1;
-    modx_output("\n[Interrupted] Stopping...\n");
+    modx_output_msg("\n[Interrupted] Stopping...\n");
 }
 
 static void progress_wrapper(long long downloaded, long long total,
@@ -78,50 +78,50 @@ static int download_single(const struct modx_cli_opts *opts,
                  opts->output_dir, filename);
         char cmd[1024];
         snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", opts->output_dir);
-        system(cmd);
+        (void)system(cmd);
     } else {
         strcpy(fullpath, filename);
     }
 
-    modx_output_init(opts->quiet, opts->verbose);
+    modx_output_msg_init(opts->quiet, opts->verbose);
     modx_progress_init(opts->quiet);
 
     /* 显示代理信息 */
     if (opts->proxy_url) {
-        modx_output_verbose("Using proxy: %s\n", opts->proxy_url);
+        modx_output_msg_verbose("Using proxy: %s\n", opts->proxy_url);
     }
 
     /* 显示镜像信息 */
     if (opts->mirrors && opts->mirror_count > 0) {
-        modx_output_verbose("Mirrors: %d available\n", opts->mirror_count);
+        modx_output_msg_verbose("Mirrors: %d available\n", opts->mirror_count);
     }
 
     /* 获取并显示服务器 IP */
     if (modx_tcp_connect(url, 80, ip, sizeof(ip)) >= 0 ||
         modx_tcp_connect(url, 443, ip, sizeof(ip)) >= 0) {
         if (!opts->quiet) {
-            modx_output("[Server IP] %s\n", ip);
+            modx_output_msg("[Server IP] %s\n", ip);
         }
     }
 
     /* 获取文件大小 */
     g_total_size = modx_http_get_size(download_url);
     if (g_total_size <= 0) {
-        modx_output_error("Error: Cannot get file size\n");
+        modx_output_msg_error("Error: Cannot get file size\n");
         return 1;
     }
 
     if (!opts->quiet) {
-        modx_output("URL: %s\n", download_url);
-        modx_output("File: %s\n", fullpath);
-        modx_output("Size: %lld bytes (%.2f MB)\n",
+        modx_output_msg("URL: %s\n", download_url);
+        modx_output_msg("File: %s\n", fullpath);
+        modx_output_msg("Size: %lld bytes (%.2f MB)\n",
                     g_total_size, (double)g_total_size / (1024 * 1024));
-        modx_output("Threads: %d\n", opts->threads);
+        modx_output_msg("Threads: %d\n", opts->threads);
         if (opts->rate_limit > 0) {
-            modx_output("Rate limit: %lld bytes/s\n", opts->rate_limit);
+            modx_output_msg("Rate limit: %lld bytes/s\n", opts->rate_limit);
         }
         if (opts->max_retries != 3) {
-            modx_output("Max retries: %d\n", opts->max_retries);
+            modx_output_msg("Max retries: %d\n", opts->max_retries);
         }
     }
 
@@ -129,17 +129,17 @@ static int download_single(const struct modx_cli_opts *opts,
     if (modx_progress_exists(fullpath)) {
         if (opts->ask_resume) {
             char answer[8];
-            modx_output("Resume previous download? [Y/n]: ");
+            modx_output_msg("Resume previous download? [Y/n]: ");
             fflush(stdout);
             if (fgets(answer, sizeof(answer), stdin)) {
                 if (answer[0] == 'n' || answer[0] == 'N') {
                     modx_progress_remove(fullpath);
                     modx_progress_remove_all(fullpath, opts->threads);
-                    modx_output("Starting fresh download...\n");
+                    modx_output_msg("Starting fresh download...\n");
                 } else {
                     long long done = modx_progress_load(fullpath);
                     if (done > 0) {
-                        modx_output("Resuming from %lld bytes (%.1f%%)\n",
+                        modx_output_msg("Resuming from %lld bytes (%.1f%%)\n",
                                     done, (double)done / g_total_size * 100);
                         g_total_downloaded = done;
                     }
@@ -149,7 +149,7 @@ static int download_single(const struct modx_cli_opts *opts,
             long long done = modx_progress_load(fullpath);
             if (done > 0) {
                 if (!opts->quiet) {
-                    modx_output("Auto-resume from %lld bytes\n", done);
+                    modx_output_msg("Auto-resume from %lld bytes\n", done);
                 }
                 g_total_downloaded = done;
             }
@@ -161,7 +161,7 @@ static int download_single(const struct modx_cli_opts *opts,
     if (!fp) {
         fp = fopen(fullpath, "wb");
         if (!fp) {
-            modx_output_error("Error: Cannot create file %s\n", fullpath);
+            modx_output_msg_error("Error: Cannot create file %s\n", fullpath);
             return 1;
         }
         fseek(fp, g_total_size - 1, SEEK_SET);
@@ -178,14 +178,14 @@ static int download_single(const struct modx_cli_opts *opts,
     if (opts->show_headers) {
         headers = modx_http_get_last_headers();
         if (headers && strlen(headers) > 0) {
-            modx_output_headers(headers);
+            modx_output_msg_headers(headers);
         }
     }
 
     /* 创建线程池并下载 */
     pool = modx_pool_create(opts->threads);
     if (!pool) {
-        modx_output_error("Error: Failed to create thread pool\n");
+        modx_output_msg_error("Error: Failed to create thread pool\n");
         return 1;
     }
 
@@ -217,27 +217,27 @@ static int download_single(const struct modx_cli_opts *opts,
             modx_progress_remove(fullpath);
             modx_progress_remove_all(fullpath, opts->threads);
 
-            modx_output("\n");
+            modx_output_msg("\n");
 
             /* 校验和（默认开启） */
             if (modx_file_md5(fullpath, checksum_out, sizeof(checksum_out)) == 0) {
-                modx_output("[MD5] %s\n", checksum_out);
+                modx_output_msg("[MD5] %s\n", checksum_out);
             }
             if (modx_file_sha256(fullpath, checksum_out, sizeof(checksum_out)) == 0) {
-                modx_output("[SHA256] %s\n", checksum_out);
+                modx_output_msg("[SHA256] %s\n", checksum_out);
             }
 
-            modx_output("Download completed: %s\n", fullpath);
+            modx_output_msg("Download completed: %s\n", fullpath);
             return 0;
         } else {
-            modx_output_error("Error: Merge failed\n");
+            modx_output_msg_error("Error: Merge failed\n");
             return 1;
         }
     } else {
         if (g_should_stop) {
-            modx_output("\nDownload interrupted. Progress saved.\n");
+            modx_output_msg("\nDownload interrupted. Progress saved.\n");
         } else {
-            modx_output_error("\nDownload failed\n");
+            modx_output_msg_error("\nDownload failed\n");
         }
         modx_progress_save(fullpath, g_total_downloaded);
         return 1;
@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    modx_output_init(opts.quiet, opts.verbose);
+    modx_output_msg_init(opts.quiet, opts.verbose);
 
     /* 批量下载模式 */
     if (opts.batch_file) {
@@ -290,7 +290,7 @@ int main(int argc, char *argv[])
             int success = 0, failed = 0;
             for (int i = 0; i < count; i++) {
                 if (!opts.quiet) {
-                    modx_output("\n[Batch %d/%d] %s\n", i + 1, count, urls[i]);
+                    modx_output_msg("\n[Batch %d/%d] %s\n", i + 1, count, urls[i]);
                 }
                 char *name = strrchr(urls[i], '/');
                 if (modx_download_single(&opts, urls[i],
@@ -301,10 +301,10 @@ int main(int argc, char *argv[])
                 }
             }
             modx_batch_free(urls, count);
-            modx_output("\nBatch done: %d success, %d failed\n", success, failed);
+            modx_output_msg("\nBatch done: %d success, %d failed\n", success, failed);
             return failed > 0 ? 1 : 0;
         }
-        modx_output_error("Error: Cannot read batch file %s\n", opts.batch_file);
+        modx_output_msg_error("Error: Cannot read batch file %s\n", opts.batch_file);
         return 1;
     }
 
@@ -324,7 +324,7 @@ int main(int argc, char *argv[])
     }
 
     if (!url) {
-        modx_output_error("Error: No URL provided\n");
+        modx_output_msg_error("Error: No URL provided\n");
         return 1;
     }
 

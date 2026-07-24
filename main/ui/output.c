@@ -20,21 +20,30 @@ void modx_output(const char *msg)
     printf("%s", msg);
 }
 
-void modx_output_verbose(const char *msg, ...)
+void modx_output_msg(const char *fmt, ...)
 {
-    if (g_quiet || !g_verbose) return;
+    if (g_quiet) return;
     va_list args;
-    va_start(args, msg);
-    printf("[VERBOSE] ");
-    vprintf(msg, args);
+    va_start(args, fmt);
+    vprintf(fmt, args);
     va_end(args);
 }
 
-void modx_output_error(const char *msg, ...)
+void modx_output_verbose(const char *fmt, ...)
+{
+    if (g_quiet || !g_verbose) return;
+    va_list args;
+    va_start(args, fmt);
+    printf("[VERBOSE] ");
+    vprintf(fmt, args);
+    va_end(args);
+}
+
+void modx_output_error(const char *fmt, ...)
 {
     va_list args;
-    va_start(args, msg);
-    vfprintf(stderr, msg, args);
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
     va_end(args);
 }
 

@@ -1,11 +1,12 @@
 // main/cli/args.c
 
 #include "cli.h"
+#include "../ui/ui.h"
+#include "../../lib/net/net.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include "../ui/ui.h"
 
 #define VERSION "1.7.0"
 
@@ -76,17 +77,17 @@ int modx_parse_args(int argc, char **argv, struct modx_cli_opts *opts)
             opts->batch_file = argv[++i];
         } else if (strcmp(argv[i], "-x") == 0 && i + 1 < argc) {
             opts->proxy_url = argv[++i];
-            modx_proxy_set_http(opts->proxy_url);
+            modx_proxy_set_http(opts->proxy_url);  /* 现在有声明了 */
         } else if (strcmp(argv[i], "-m") == 0) {
             parse_mirrors(&i, argc, argv, opts);
         } else if (strcmp(argv[i], "--dns") == 0 && i + 1 < argc) {
-            /* 自定义 DNS，需要在 socket.c 中实现 */
-            modx_output_verbose("Custom DNS: %s (not fully implemented)\n", argv[++i]);
+            opts->dns_server = argv[++i];
+            modx_output_verbose("Custom DNS: %s\n", opts->dns_server);
         } else if (strcmp(argv[i], "--ca-cert") == 0 && i + 1 < argc) {
-            /* CA 证书文件，在 tls.c 中实现 */
-            modx_output_verbose("CA cert: %s (not fully implemented)\n", argv[++i]);
+            opts->ca_cert_file = argv[++i];
+            modx_output_verbose("CA cert: %s\n", opts->ca_cert_file);
         } else if (argv[i][0] != '-') {
-            /* 可能是 URL 或批量文件，跳过，由 main.c 处理 */
+            /* 可能是 URL，由 main.c 处理 */
         }
     }
 
